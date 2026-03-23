@@ -1,6 +1,6 @@
-# Universal Digital Accessibility Agent (UDAA) ☸️
+# Universal Digital Accessibility Agent (HandOff) ☸️
 
-**UDAA** is an AI-powered co-pilot designed to become the "hands on screen" for users with accessibility needs. By combining **Gemini 2.5 Computer Use** for visual navigation and **Gemini 2.0 Live API** for real-time narration, UDAA bridge the gap between user intent and complex digital interfaces.
+**HandOff** is an AI-powered co-pilot designed to become the "hands on screen" for users with accessibility needs. By combining **Gemini 2.5 Computer Use** for visual navigation and **gemini-2.5-flash-native-audio** for real-time narration, HandOff bridge the gap between user intent and complex digital interfaces.
 
 Built for the **Gemini Live Agent Challenge** under the **UI Navigator** category.
 
@@ -8,13 +8,14 @@ Built for the **Gemini Live Agent Challenge** under the **UI Navigator** categor
 
 ## 🌟 Key Features
 
-- **Hybrid Browser Engine**: 
+- **Double-Agent Loop (Remote + Live)**: 
     - **Remote Mode**: Uses Playwright for an isolated, sandboxed experience.
-    - **Live Mode**: Uses a custom Chrome Extension to pilot the user's *actual* browser session—perfect for Netflix, WhatsApp, or any site where the user is already logged in.
-- **Multimodal Visual Intelligence**: Interprets screens purely through images/screenshots using `gemini-2.5-computer-use-preview`.
-- **Real-Time Audio/Text Narration**: Summarizes every action and observation as it happens via `gemini-2.0-flash-exp` (Gemini Live).
-- **Interactive Overlay**: A floating status banner in the browser tab keeps the user informed of the AI's thoughts and current actions.
-- **Safety First**: Built-in "Require Confirmation" system stops the AI before performing sensitive actions like payments or password changes.
+    - **Live Mode**: Pilots the user's *actual* browser via a Chrome Extension—perfect for Netflix, YouTube, or WhatsApp where you're already logged in.
+- **Patience Mode 🐢**: When enabled, the agent slows down its reaction time and waits longer for pages to settle—ideal for slow connections or heavy sites.
+- **Grandparents Mode 👵**: Replaces technical logs with warm, first-person narration (e.g., "I'm looking for your recipe now!").
+- **Visual-First Intelligence**: Interprets screens purely through images using `gemini-2.5-computer-use-preview`.
+- **Real-Time Narration**: Summarizes every action as it happens via `gemini-2.5-flash-native-audio`.
+- **Safety First**: Built-in "Require Confirmation" system stops the AI before performing sensitive actions like payments.
 
 ---
 
@@ -60,13 +61,40 @@ Open [http://localhost:3000](http://localhost:3000).
 2. Enable "Developer mode" (top right).
 3. Click "Load unpacked" and select the `extension/` folder in this repo.
 
-Once loaded, UDAA will automatically connect to any tab it opens!
+Once loaded, HandOff will automatically connect to any tab it opens!
+
+---
+
+## 🧪 Recommended Test Flows
+
+Execute these tasks in **Live Mode** to see the recent accuracy and synchronization fixes in action:
+
+### 1. The "Entertainment" Test (YouTube)
+*   **Instruction**: "Go to YouTube, search for 'lofi hip hop radio', and play the first result."
+*   **What to expect**: 
+    - The agent will navigate to YouTube.
+    - It will precisely click the search bar, type the query, and find the video.
+    - Because of **Screenshot Sync**, it will correctly detect that the video has started playing and declare the task complete.
+
+### 2. The "Form Master" Test (MakeMyTrip)
+*   **Instruction**: "Search for flights on MakeMyTrip from Delhi to Mumbai for tomorrow, then select 'Student' special fare."
+*   **What to expect**:
+    - The agent will interact with the complex MMT date picker.
+    - It will precisely target the **Student** fare checkbox even if it's crowded by other UI elements.
+    - You will see the cyan highlight overlay appearing exactly on the targeted elements.
+
+### 3. The "Deep Research" Test (Wikipedia)
+*   **Instruction**: "Go to Wikipedia, search for 'DeepMind', and tell me the name of its founders."
+*   **What to expect**:
+    - The agent will use the search bar, type the query, and press Enter.
+    - It will read the page content and provide a verbal/text summary of the founders.
+    - This demonstrates the agent's ability to transition from "acting" to "interpreting" information.
 
 ---
 
 ## 🏆 Hackathon Alignment: UI Navigator Track
 
-UDAA addresses the core requirements of the **UI Navigator** track by:
+HandOff addresses the core requirements of the **UI Navigator** track by:
 1. **Becoming the user's hands**: Direct physical manipulation of the browser.
 2. **Visual Understanding**: Interpreting UI with or *without* DOM access (Live mode is 100% visual coordinate based).
 3. **Multimodal Core**: Every action is guided by the latest Gemini multimodal screenshot processing.

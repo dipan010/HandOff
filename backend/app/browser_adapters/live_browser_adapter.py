@@ -15,6 +15,7 @@ class LiveBrowserAdapter(BrowserAdapter):
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._latest_screenshot_bytes: bytes | None = None
+        self._latest_screenshot_time: float = 0
         self._action_result_future: asyncio.Future | None = None
         self._page = None 
         self._context = None
@@ -23,6 +24,11 @@ class LiveBrowserAdapter(BrowserAdapter):
     @property
     def page(self):
         return self._page
+
+    async def get_current_url(self) -> str:
+        res = await self.execute_action("get_current_url", {})
+        return res.get("url", "")
+
 
     async def launch(self, start_url: str = ""):
         """Launch a new tab in the user's existing default OS browser."""
@@ -52,21 +58,31 @@ class LiveBrowserAdapter(BrowserAdapter):
             
         logger.info(f"Triggered Live Chrome Native Tab for session {self.session_id}")
 
-    async def capture_screenshot(self) -> bytes:
-        """Wait for and return the latest screenshot from the extension stream."""
-        # Wait up to 30 seconds for the extension to inject and stream
-        for _ in range(300):
-            if self._latest_screenshot_bytes:
+    async def capture_screenshot(self, min_timestamp: float = 0) -> bytes:
+        """Wait for and return the latest screenshot from the extension stream.
+        
+        If min_timestamp is provided, waits for a frame that arrived AFTER that time.
+        """
+        import time
+        # Wait up to 10 seconds for a fresh screenshot
+        for _ in range(100):
+            if self._latest_screenshot_bytes and self._latest_screenshot_time >= min_timestamp:
                 return self._latest_screenshot_bytes
             await asyncio.sleep(0.1)
         
-        logger.warning(f"Timeout waiting for screenshot from extension for {self.session_id}")
+        if min_timestamp > 0:
+            logger.warning(f"Timeout waiting for FRESH screenshot (min_ts={min_timestamp}) for {self.session_id}. Returning latest.")
+        else:
+            logger.warning(f"Timeout waiting for ANY screenshot from extension for {self.session_id}")
+            
         return getattr(self, "_latest_screenshot_bytes", b"") or b""
 
     def update_screenshot(self, b64_frame: str):
         """Called by the websocket handler when a new frame arrives."""
+        import time
         try:
             self._latest_screenshot_bytes = base64.b64decode(b64_frame)
+            self._latest_screenshot_time = time.time()
         except Exception as e:
             logger.error(f"Failed to decode extension frame: {e}")
 
