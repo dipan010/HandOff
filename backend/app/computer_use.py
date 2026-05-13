@@ -155,7 +155,8 @@ async def run_agent_loop(
     grandparents_mode: bool = False,
     last_action_time_ref: list | None = None,
     completion_text_ref: list | None = None,
-    live_session_ref: list | None = None,  # holds the live session so agent loop can push into it
+    live_session_ref: list | None = None,
+    screenshot_queue: asyncio.Queue | None = None,
 ):
     """Execute the Computer Use agent loop.
 
@@ -260,6 +261,14 @@ async def run_agent_loop(
 
         # Send screenshot to frontend
         await ws_manager.send_screenshot(session_id, screenshot_b64, turn + 1)
+
+        # Share screenshot with the live stream so it narrates from the same
+        # frame the agent is analysing — not from its own independent clock.
+        if screenshot_queue is not None:
+            try:
+                screenshot_queue.put_nowait(screenshot_bytes)
+            except asyncio.QueueFull:
+                pass  # live stream is behind; drop oldest implicitly via maxsize
 
         # Upload to Cloud Storage (async, non-blocking)
         asyncio.create_task(

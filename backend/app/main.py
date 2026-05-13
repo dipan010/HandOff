@@ -244,16 +244,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 last_action_time_ref = [0.0]
                 completion_text_ref = [None]
                 live_session_ref = [None]  # holds the live session so agent loop can push into it
+                # Bounded queue: orchestrator pushes its screenshots here so the
+                # live stream always narrates from the same frame the agent is analysing.
+                screenshot_queue: asyncio.Queue = asyncio.Queue(maxsize=3)
 
                 agent_task = asyncio.create_task(
-                    run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                    run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref, screenshot_queue)
                 )
-                
+
                 # Only start narration stream if enabled
                 live_task = None
                 if narration_enabled:
                     live_task = asyncio.create_task(
-                        run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                        run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref, screenshot_queue)
                     )
 
                 active_sessions[session_id]["agent_task"] = agent_task
