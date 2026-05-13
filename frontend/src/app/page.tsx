@@ -18,6 +18,8 @@ export default function Home() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const narrationQueue = useRef<string[]>([]);
   const isDisplaying = useRef(false);
+  const narrationEnabledRef = useRef(narrationEnabled);
+  useEffect(() => { narrationEnabledRef.current = narrationEnabled; }, [narrationEnabled]);
 
   const {
     isConnected,
@@ -38,7 +40,7 @@ export default function Home() {
   // Generate a new session ID on mount
   useEffect(() => {
     if (!sessionId) {
-      setSessionId(Math.random().toString(36).substring(2, 10));
+      setSessionId(crypto.randomUUID().replace(/-/g, '').slice(0, 8));
     }
   }, [sessionId]);
 
@@ -61,13 +63,14 @@ export default function Home() {
     isDisplaying.current = true;
     const next = narrationQueue.current.shift()!;
     setDisplayText(next);
-    if (narrationEnabled) {
+    // Use ref so toggling narrationEnabled mid-queue reads the current value
+    if (narrationEnabledRef.current) {
       speak(next);
     }
 
     // Hold each message for at least 3 seconds
     setTimeout(displayNextNarration, 3000);
-  }, [narrationEnabled, speak]);
+  }, [speak]); // narrationEnabled intentionally read via ref
 
   useEffect(() => {
     if (narration) {

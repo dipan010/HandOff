@@ -30,17 +30,17 @@ async def _signal_extension_complete(session_id: str, manager):
 
 from app.pause_gate import get_or_create as get_gate
 
-_last_narration_inject_time = 0.0
+# Per-session last narration time — avoids cross-session rate-limit interference
+_narration_times: dict[str, float] = {}
 
 async def _narrate_action(
+    session_id: str,
     action_name: str,
     action_args: dict,
     last_action_time_ref: list | None,
     live_session_ref: list | None,
     grandparents_mode: bool = False,
 ):
-    global _last_narration_inject_time
-
     # Always update action timestamp for cooldown tracking
     if last_action_time_ref is not None:
         last_action_time_ref[0] = time.time()
@@ -49,12 +49,11 @@ async def _narrate_action(
     if live_session_ref is None or live_session_ref[0] is None:
         return
 
-    # Rate limit — never inject narration faster than every 3 seconds
-    # This prevents audio blur when the agent fires multiple actions quickly
+    # Rate limit — never inject narration faster than every 3 seconds per session
     now = time.time()
-    if now - _last_narration_inject_time < 3.0:
+    if now - _narration_times.get(session_id, 0.0) < 3.0:
         return
-    _last_narration_inject_time = now
+    _narration_times[session_id] = now
 
     # Build plain English description — different phrasing per mode
     if action_name in ("type_text_at", "type"):
@@ -168,8 +167,12 @@ async def run_agent_loop(
     6. Capture new screenshot
     7. Repeat until task complete or max turns reached
     """
+    if not settings.GOOGLE_API_KEY:
+        await ws_manager.send_error(session_id, "GOOGLE_API_KEY is not set. Configure it in your .env file.")
+        return
+
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-    
+
     post_action_sleep = 2.0 if patience_mode else 0.5
     post_nav_sleep = 4.0 if patience_mode else 1.0
 
@@ -209,7 +212,15 @@ async def run_agent_loop(
         await ws_manager.send_status(session_id, "navigating", f"Opening {start_url}", grandparents_mode)
         page = browser.page
         if page:
-            await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as nav_err:
+                logger.warning(f"Navigation to {start_url} failed: {nav_err}")
+                await ws_manager.send_status(
+                    session_id, "thinking",
+                    f"Could not open {start_url} — continuing anyway",
+                    grandparents_mode
+                )
             await asyncio.sleep(post_nav_sleep)
 
     # Building optimization: tell the agent the browser is already open
@@ -534,6 +545,7 @@ async def run_agent_loop(
             result = await browser.execute_action(action_name, action_args)
             
             await _narrate_action(
+                session_id,
                 action_name,
                 action_args,
                 last_action_time_ref,
@@ -601,3 +613,4 @@ async def run_agent_loop(
     await ws_manager.send_task_complete(session_id, summary)
     await update_session_state(session_id, "completed", "Max turns reached")
     await _signal_extension_complete(session_id, ws_manager)
+    _narration_times.pop(session_id, None)

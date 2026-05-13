@@ -3,9 +3,14 @@
 if (window.__udaaContentScriptLoaded) return;
 window.__udaaContentScriptLoaded = true;
 
-window.udaaLastClickedElement = null;
-window._udaaLastClickX = null;
-window._udaaLastClickY = null;
+// Namespace all extension state under a single object to avoid conflicts with other extensions
+if (!window.__udaaState) {
+    window.__udaaState = { lastClickedElement: null, lastClickX: null, lastClickY: null };
+}
+// Aliases kept for internal readability
+window.udaaLastClickedElement = window.__udaaState.lastClickedElement;
+window._udaaLastClickX = window.__udaaState.lastClickX;
+window._udaaLastClickY = window.__udaaState.lastClickY;
 
 function _setInputValue(element, value) {
     if (element.isContentEditable) {

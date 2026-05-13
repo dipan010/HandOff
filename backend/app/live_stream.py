@@ -122,8 +122,8 @@ async def run_live_stream(
 
                                             await ws_manager.send_narration(session_id, part.text)
                                             last_narration_time = now
-                            except AttributeError:
-                                pass
+                            except AttributeError as attr_err:
+                                logger.debug(f"Narration response attribute error: {attr_err}")
 
                 except asyncio.CancelledError:
                     pass
@@ -132,7 +132,7 @@ async def run_live_stream(
 
             receiver = asyncio.create_task(receive_narration())
 
-            try:
+            try:  # noqa: SIM105 — inner try ensures receiver is always cancelled
                 last_screenshot_hash = None
 
                 while True:
@@ -182,13 +182,15 @@ async def run_live_stream(
 
             except asyncio.CancelledError:
                 logger.info(f"Live stream cancelled for {session_id}")
+            except Exception as loop_err:
+                logger.error(f"Live stream loop error: {loop_err}")
             finally:
                 receiver.cancel()
                 if live_session_ref is not None:
                     live_session_ref[0] = None
                 try:
                     await receiver
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, Exception):
                     pass
 
     except Exception as e:

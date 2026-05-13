@@ -58,10 +58,11 @@ class LiveBrowserAdapter(BrowserAdapter):
             
         logger.info(f"Triggered Live Chrome Native Tab for session {self.session_id}")
 
-    async def capture_screenshot(self, min_timestamp: float = 0) -> bytes:
+    async def capture_screenshot(self, min_timestamp: float = 0) -> bytes | None:
         """Wait for and return the latest screenshot from the extension stream.
-        
+
         If min_timestamp is provided, waits for a frame that arrived AFTER that time.
+        Returns None if no frame arrives within the timeout so callers can retry.
         """
         import time
         # Wait up to 10 seconds for a fresh screenshot
@@ -69,13 +70,16 @@ class LiveBrowserAdapter(BrowserAdapter):
             if self._latest_screenshot_bytes and self._latest_screenshot_time >= min_timestamp:
                 return self._latest_screenshot_bytes
             await asyncio.sleep(0.1)
-        
+
         if min_timestamp > 0:
-            logger.warning(f"Timeout waiting for FRESH screenshot (min_ts={min_timestamp}) for {self.session_id}. Returning latest.")
+            logger.warning(
+                f"Timeout waiting for FRESH screenshot (min_ts={min_timestamp}) for {self.session_id}. "
+                "Returning latest available."
+            )
+            return self._latest_screenshot_bytes  # may be None if no frame ever arrived
         else:
             logger.warning(f"Timeout waiting for ANY screenshot from extension for {self.session_id}")
-            
-        return getattr(self, "_latest_screenshot_bytes", b"") or b""
+            return None
 
     def update_screenshot(self, b64_frame: str):
         """Called by the websocket handler when a new frame arrives."""

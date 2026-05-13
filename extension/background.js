@@ -214,9 +214,10 @@ chrome.action.onClicked.addListener((tab) => {
 // Clear injection flag on hard reloads or manual URL navigations.
 // Without this, the agent would block itself from working after a page refresh.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    // Detect hard reload or new URL navigation
-    if (changeInfo.status === 'loading' && changeInfo.url) {
-        console.log(`UDAA: Tab ${tabId} reloaded/navigated. Resetting injection state.`);
+    // Clear injection flag on any navigation or reload.
+    // changeInfo.url is absent on page reloads (same URL), so we must not require it.
+    if (changeInfo.status === 'loading') {
+        console.log(`UDAA: Tab ${tabId} navigating/reloading. Resetting injection state.`);
         injectedTabs.delete(tabId);
     }
 });
