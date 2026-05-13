@@ -3,47 +3,77 @@
 import { useRef, useCallback, useEffect } from 'react';
 
 /**
- * A hook that wraps the Web SpeechSynthesis API for speaking text aloud.
- * - Cancels the previous utterance before speaking a new one (no queue buildup)
- * - Gracefully no-ops if the browser doesn't support speech synthesis
- * - Cleans up on unmount
+ * Queue-based wrapper around the Web SpeechSynthesis API.
+ * - Multiple speak() calls queue and play in order — they no longer cancel each other.
+ * - Skips duplicate consecutive utterances (Gemini sometimes repeats).
+ * - Caps the queue so a burst of state changes can't pile up audio indefinitely.
+ * - Cleans up on unmount.
+ *
+ * For visually-impaired users this matters: narration, status updates and
+ * action previews all reach the ears in the order they happened, without
+ * a later message silencing an earlier one mid-sentence.
  */
+const MAX_QUEUE = 5;
+
 export function useSpeech(enabled: boolean) {
     const synthRef = useRef<SpeechSynthesis | null>(null);
-    const lastSpokenRef = useRef<string>('');
+    const queueRef = useRef<string[]>([]);
+    const isSpeakingRef = useRef(false);
+    const lastQueuedRef = useRef<string>('');
 
     useEffect(() => {
         if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
             synthRef.current = window.speechSynthesis;
         }
         return () => {
-            // Cancel any in-progress speech on unmount
             synthRef.current?.cancel();
+            queueRef.current = [];
+            isSpeakingRef.current = false;
         };
+    }, []);
+
+    const speakNext = useCallback(() => {
+        if (!synthRef.current) {
+            isSpeakingRef.current = false;
+            return;
+        }
+        const next = queueRef.current.shift();
+        if (!next) {
+            isSpeakingRef.current = false;
+            return;
+        }
+        isSpeakingRef.current = true;
+        const utterance = new SpeechSynthesisUtterance(next);
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+        utterance.onend = () => speakNext();
+        utterance.onerror = () => speakNext();
+        synthRef.current.speak(utterance);
     }, []);
 
     const speak = useCallback((text: string) => {
         if (!enabled || !synthRef.current || !text.trim()) return;
-
-        // Skip duplicate narrations (Gemini sometimes repeats)
         const trimmed = text.trim();
-        if (trimmed === lastSpokenRef.current) return;
-        lastSpokenRef.current = trimmed;
+        // Skip immediate duplicates (last queued OR currently playing)
+        if (trimmed === lastQueuedRef.current) return;
+        lastQueuedRef.current = trimmed;
 
-        // Cancel any in-progress speech so narration stays current
-        synthRef.current.cancel();
-
-        const utterance = new SpeechSynthesisUtterance(trimmed);
-        utterance.rate = 0.95;   // Slightly slower for accessibility
-        utterance.pitch = 1.0;
-        utterance.volume = 1.0;
-
-        synthRef.current.speak(utterance);
-    }, [enabled]);
+        queueRef.current.push(trimmed);
+        // Drop oldest if queue grows too large — keep audio "current"
+        if (queueRef.current.length > MAX_QUEUE) {
+            queueRef.current = queueRef.current.slice(-MAX_QUEUE);
+        }
+        if (!isSpeakingRef.current) {
+            speakNext();
+        }
+    }, [enabled, speakNext]);
 
     const stop = useCallback(() => {
         synthRef.current?.cancel();
-        lastSpokenRef.current = '';
+        queueRef.current = [];
+        isSpeakingRef.current = false;
+        lastQueuedRef.current = '';
     }, []);
 
     return { speak, stop };

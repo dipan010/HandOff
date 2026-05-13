@@ -22,6 +22,7 @@ interface UseWebSocketReturn {
     screenshot: string | null;
     actions: { step: number; data: AgentAction }[];
     narration: string;
+    actionPreview: string;
     safetyRequest: SafetyConfirmRequest | null;
     pausePrompt: PausePromptData | null;
     taskSummary: string | null;
@@ -39,6 +40,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
     const [screenshot, setScreenshot] = useState<string | null>(null);
     const [actions, setActions] = useState<{ step: number; data: AgentAction }[]>([]);
     const [narration, setNarration] = useState('');
+    const [actionPreview, setActionPreview] = useState('');
     const [safetyRequest, setSafetyRequest] = useState<SafetyConfirmRequest | null>(null);
     const [pausePrompt, setPausePrompt] = useState<PausePromptData | null>(null);
     const [taskSummary, setTaskSummary] = useState<string | null>(null);
@@ -86,6 +88,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
             setScreenshot(null);
             setActions([]);
             setNarration('');
+            setActionPreview('');
             setSafetyRequest(null);
             setPausePrompt(null);
             setTaskSummary(null);
@@ -125,6 +128,12 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
 
                     case 'narration':
                         setNarration(data.text);
+                        break;
+
+                    case 'action_preview':
+                        // Pre-action announcement so audio-only users hear what's
+                        // about to happen 0.8s-2s before it fires.
+                        setActionPreview(data.text);
                         break;
 
                     case 'safety_confirm':
@@ -262,6 +271,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         setScreenshot(null);
         setActions([]);
         setNarration('');
+        setActionPreview('');
         setSafetyRequest(null);
         setPausePrompt(null);
         setTaskSummary(null);
@@ -307,6 +317,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         screenshot,
         actions,
         narration,
+        actionPreview,
         safetyRequest,
         pausePrompt,
         taskSummary,

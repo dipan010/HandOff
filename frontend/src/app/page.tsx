@@ -29,6 +29,7 @@ export default function Home() {
     screenshot,
     actions,
     narration,
+    actionPreview,
     safetyRequest,
     pausePrompt,
     error,
@@ -80,6 +81,22 @@ export default function Home() {
       }
     }
   }, [narration, displayNextNarration]);
+
+  // Speak status detail changes so audio-only users always know what step the
+  // agent is on — not just when the Live API has something to say.
+  useEffect(() => {
+    if (narrationEnabledRef.current && statusDetail) {
+      speak(statusDetail);
+    }
+  }, [statusDetail, speak]);
+
+  // Speak the action preview before the action fires.  Backend gives us a
+  // 0.8s (or 2s in grandparents mode) lead so the TTS has time to be heard.
+  useEffect(() => {
+    if (narrationEnabledRef.current && actionPreview) {
+      speak(`About to ${actionPreview.toLowerCase()}.`);
+    }
+  }, [actionPreview, speak]);
 
   // Stop speech when task ends
   useEffect(() => {
