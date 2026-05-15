@@ -7,32 +7,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app import computer_use
+from app.guardrails import is_login_wall
 
 
 class TestIsLoginWall:
     def test_detects_google_accounts(self):
-        assert computer_use._is_login_wall("https://accounts.google.com/signin")
+        assert is_login_wall("https://accounts.google.com/signin")
 
     def test_detects_paypal(self):
-        assert computer_use._is_login_wall("https://www.paypal.com/login")
+        assert is_login_wall("https://www.paypal.com/login")
 
     def test_detects_login_subdomain(self):
-        assert computer_use._is_login_wall("https://login.example.com/")
+        assert is_login_wall("https://login.example.com/")
 
     def test_detects_payment_subdomain(self):
-        assert computer_use._is_login_wall("https://payment.shop.com/checkout")
+        assert is_login_wall("https://payment.shop.com/checkout")
 
     def test_does_not_match_random_url(self):
-        assert not computer_use._is_login_wall("https://wikipedia.org/wiki/Login")
+        assert not is_login_wall("https://wikipedia.org/wiki/Login")
 
     def test_does_not_match_search_results(self):
-        assert not computer_use._is_login_wall("https://google.com/search?q=cats")
+        assert not is_login_wall("https://google.com/search?q=cats")
 
     def test_empty_url_safe(self):
-        assert not computer_use._is_login_wall("")
+        assert not is_login_wall("")
 
     def test_none_url_safe(self):
-        assert not computer_use._is_login_wall(None)
+        # guardrails.is_login_wall guards against falsy input
+        assert not is_login_wall(None)
 
 
 class TestActionToPlainEnglish:

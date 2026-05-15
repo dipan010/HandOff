@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Play, Link2, MessageSquare, Volume2, VolumeX } from 'lucide-react';
 
+const MAX_TASK_LENGTH = 4000;
+
 interface TaskInputProps {
     onStart: (task: string, startUrl: string, narrationEnabled: boolean) => void;
     disabled: boolean;
@@ -11,8 +13,19 @@ export function TaskInput({ onStart, disabled }: TaskInputProps) {
     const [url, setUrl] = useState('');
     const [narrationEnabled, setNarrationEnabled] = useState(true);
 
+    const urlWarning =
+        url.trim() && !/^https?:\/\//i.test(url.trim())
+            ? 'URL must start with http:// or https://'
+            : null;
+
+    const charsLeft = MAX_TASK_LENGTH - task.length;
+    const isNearLimit = charsLeft < 400;
+    const isOverLimit = charsLeft < 0;
+
+    const canStart = !disabled && task.trim().length > 0 && !isOverLimit && !urlWarning;
+
     const handleStart = () => {
-        if (!task.trim()) return;
+        if (!canStart) return;
         onStart(task.trim(), url.trim(), narrationEnabled);
     };
 
@@ -37,12 +50,17 @@ export function TaskInput({ onStart, disabled }: TaskInputProps) {
                         type="text"
                         className="input-field"
                         style={{ paddingLeft: '44px' }}
-                        placeholder="e.g. google.com"
+                        placeholder="e.g. https://google.com"
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
                         disabled={disabled}
                     />
                 </div>
+                {urlWarning && (
+                    <p style={{ fontSize: '0.75rem', color: 'var(--error, #f87171)', marginTop: '0.25rem' }}>
+                        {urlWarning}
+                    </p>
+                )}
             </div>
 
             <div>
@@ -54,14 +72,25 @@ export function TaskInput({ onStart, disabled }: TaskInputProps) {
                     value={task}
                     onChange={(e) => setTask(e.target.value)}
                     disabled={disabled}
+                    maxLength={MAX_TASK_LENGTH}
                 />
+                {isNearLimit && (
+                    <p style={{
+                        fontSize: '0.75rem',
+                        color: isOverLimit ? 'var(--error, #f87171)' : 'var(--text-muted)',
+                        marginTop: '0.25rem',
+                        textAlign: 'right',
+                    }}>
+                        {charsLeft} characters remaining
+                    </p>
+                )}
             </div>
 
             <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
                 <button
                     className="btn-primary"
                     onClick={handleStart}
-                    disabled={disabled || !task.trim()}
+                    disabled={!canStart}
                     style={{ flex: 1 }}
                 >
                     <Play fill="currentColor" size={20} />

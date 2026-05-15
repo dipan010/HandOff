@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.guardrails import is_login_wall, is_navigation_allowed, PAUSE_GATE_TIMEOUT
 from app.browser_adapters.base_adapter import BrowserAdapter
 from app.websocket import manager as ws_manager
 from app.storage import upload_screenshot
@@ -145,16 +146,6 @@ async def _narrate_action(
     except Exception as e:
         logger.debug(f"Live action narration skipped: {e}")
 
-SENSITIVE_DOMAINS = [
-    "accounts.google.com", "login.", "signin.", "auth.",
-    "paypal.com", "pay.", "checkout.", "payment.",
-    "facebook.com/login", "twitter.com/login", "netflix.com/login",
-]
-
-def _is_login_wall(url: str) -> bool:
-    if not url: return False
-    return any(d in url for d in SENSITIVE_DOMAINS)
-
 def _action_to_plain_english(action_name: str, args: dict) -> str:
     if action_name in ["click_at", "click", "left_click"]:
         return "Click a button or link"
@@ -199,8 +190,15 @@ async def _pause_and_wait(
         "needs_input": needs_input,
     })
 
-    # Block here — no timeout, agent waits as long as the human needs
-    await gate.event.wait()
+    # Block until the user responds — or until PAUSE_GATE_TIMEOUT seconds pass.
+    # The timeout prevents abandoned sessions from leaking coroutines indefinitely.
+    try:
+        await asyncio.wait_for(gate.event.wait(), timeout=PAUSE_GATE_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Pause gate timed out after {PAUSE_GATE_TIMEOUT}s — auto-cancelling session {session_id}"
+        )
+        return False, None
     return gate.approved, gate.user_input
 
 
@@ -576,9 +574,22 @@ async def run_agent_loop(
                     return
                 continue  # re-enter loop, Gemini will proceed
             
+            # Domain policy — block unsafe / disallowed navigate targets before execution
+            if action_name in ("navigate", "open_web_browser"):
+                nav_url = action_args.get("url", "")
+                nav_ok, nav_reason = is_navigation_allowed(
+                    nav_url,
+                    settings.NAV_BLOCKED_DOMAINS,
+                    settings.NAV_ALLOWED_DOMAINS,
+                )
+                if not nav_ok:
+                    logger.warning(f"Navigation blocked by policy: {nav_reason}")
+                    await ws_manager.send_error(session_id, f"Navigation blocked: {nav_reason}")
+                    return
+
             # Auto-detect login walls from current URL
             current_url = await browser.get_current_url()
-            if _is_login_wall(current_url):
+            if is_login_wall(current_url):
                 approved, typed_text = await _pause_and_wait(
                     session_id,
                     reason='login_wall',

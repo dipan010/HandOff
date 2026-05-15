@@ -18,6 +18,7 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.guardrails import validate_task, validate_url, MAX_TASK_LENGTH
 from app.websocket import manager as ws_manager
 from app.browser_adapters.base_adapter import BrowserAdapter
 from app.computer_use import run_agent_loop
@@ -106,6 +107,12 @@ async def health_check():
 @app.post("/tasks", response_model=TaskResponse)
 async def create_task(request: TaskRequest):
     """Create a new task (REST alternative to WebSocket)."""
+    task_err = validate_task(request.task)
+    if task_err:
+        raise HTTPException(status_code=422, detail=task_err)
+    url_err = validate_url(request.start_url)
+    if url_err:
+        raise HTTPException(status_code=422, detail=url_err)
     session_id = str(uuid.uuid4())[:8]
     await create_session(session_id, request.task, request.start_url)
     return TaskResponse(
@@ -169,6 +176,15 @@ async def get_sessions():
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Main WebSocket endpoint for real-time agent communication."""
+    # Optional shared-secret auth — skipped when WS_API_KEY is not configured
+    if settings.WS_API_KEY:
+        token = (
+            websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            or websocket.query_params.get("api_key", "")
+        )
+        if not token or token != settings.WS_API_KEY:
+            await websocket.close(code=4001)
+            return
     await ws_manager.connect(session_id, websocket)
 
     try:
@@ -187,7 +203,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 if not task:
                     logger.warning("task_start message missing 'task' field, ignoring")
                     continue
+
+                # Guard: enforce task length limit to constrain prompt-injection surface
+                if len(task) > MAX_TASK_LENGTH:
+                    await ws_manager.send_error(
+                        session_id,
+                        f"Task too long ({len(task)} chars). Maximum is {MAX_TASK_LENGTH}.",
+                    )
+                    continue
+
                 start_url = msg_data.get("start_url", "")
+
+                # Guard: reject unsafe URL schemes and private/internal targets
+                url_err = validate_url(start_url)
+                if url_err:
+                    await ws_manager.send_error(session_id, url_err)
+                    continue
                 execution_mode = msg_data.get("execution_mode", "remote")
 
                 patience_mode = msg_data.get("patience_mode", False)

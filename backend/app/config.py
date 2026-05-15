@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     AGENT_TIMEOUT_SECONDS: int = 300
     SCREENSHOT_INTERVAL: float = 0.5  # seconds between live frames
 
+    # WebSocket auth — set a non-empty secret to require clients to send
+    # ?api_key=<key> or Authorization: Bearer <key>; empty = auth disabled
+    WS_API_KEY: str = ""
+
+    # Navigation domain policy — both lists use exact hostname matching
+    # (subdomains are included automatically)
+    NAV_BLOCKED_DOMAINS: list[str] = []   # always rejected, even if in allowed list
+    NAV_ALLOWED_DOMAINS: list[str] = []   # if non-empty, only these hosts are reachable
+
     # Server
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 

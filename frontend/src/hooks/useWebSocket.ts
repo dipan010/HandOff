@@ -95,7 +95,9 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
             setError(null);
         }
 
-        const wsUrl = `ws://localhost:8080/ws/${sessionId}`;
+        const wsBase = `ws://localhost:8080/ws/${sessionId}`;
+        const apiKey = process.env.NEXT_PUBLIC_WS_API_KEY;
+        const wsUrl = apiKey ? `${wsBase}?api_key=${encodeURIComponent(apiKey)}` : wsBase;
         const ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
