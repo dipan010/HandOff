@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 interface VoiceInputProps {
     onTranscript: (text: string) => void;
@@ -11,37 +11,44 @@ export function VoiceInput({ onTranscript, disabled }: VoiceInputProps) {
     const [isRecording, setIsRecording] = useState(false);
     const [hasSupport, setHasSupport] = useState(true);
     const recognitionRef = useRef<any>(null);
+    // Keep a stable ref to the latest callback so the recognition object is only created once
+    const onTranscriptRef = useRef(onTranscript);
+    useEffect(() => { onTranscriptRef.current = onTranscript; }, [onTranscript]);
 
     useEffect(() => {
-        if (typeof window !== 'undefined') {
-            const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-            if (SpeechRecognition) {
-                const recognition = new SpeechRecognition();
-                recognition.continuous = false;
-                recognition.interimResults = false;
-                // recognition.lang = 'en-US'; // Use browser default
-
-                recognition.onresult = (event: any) => {
-                    const transcript = event.results[0][0].transcript;
-                    onTranscript(transcript);
-                    setIsRecording(false);
-                };
-
-                recognition.onerror = (event: any) => {
-                    console.error("Speech recognition error", event.error);
-                    setIsRecording(false);
-                };
-
-                recognition.onend = () => {
-                    setIsRecording(false);
-                };
-
-                recognitionRef.current = recognition;
-            } else {
-                setHasSupport(false);
-            }
+        if (typeof window === 'undefined') return;
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            setHasSupport(false);
+            return;
         }
-    }, [onTranscript]);
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+
+        recognition.onresult = (event: any) => {
+            const transcript = event.results[0][0].transcript;
+            onTranscriptRef.current(transcript);
+            setIsRecording(false);
+        };
+
+        recognition.onerror = (event: any) => {
+            console.error("Speech recognition error", event.error);
+            setIsRecording(false);
+        };
+
+        recognition.onend = () => {
+            setIsRecording(false);
+        };
+
+        recognitionRef.current = recognition;
+
+        return () => {
+            recognitionRef.current?.abort();
+            recognitionRef.current = null;
+        };
+    }, []); // Empty deps — recognition object is created once only
 
     const toggleRecording = (e: React.MouseEvent) => {
         e.preventDefault();

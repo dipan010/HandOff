@@ -46,7 +46,8 @@ async def run_live_stream(
     grandparents_mode: bool = False,
     last_action_time_ref: list | None = None,
     completion_text_ref: list | None = None,
-    live_session_ref: list | None = None,   # ← add
+    live_session_ref: list | None = None,
+    screenshot_queue: asyncio.Queue | None = None,
 ):
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
     prompt_text = NARRATION_PROMPT_GRANDPARENTS if grandparents_mode else NARRATION_PROMPT_DEFAULT
@@ -122,8 +123,8 @@ async def run_live_stream(
 
                                             await ws_manager.send_narration(session_id, part.text)
                                             last_narration_time = now
-                            except AttributeError:
-                                pass
+                            except AttributeError as attr_err:
+                                logger.debug(f"Narration response attribute error: {attr_err}")
 
                 except asyncio.CancelledError:
                     pass
@@ -132,7 +133,7 @@ async def run_live_stream(
 
             receiver = asyncio.create_task(receive_narration())
 
-            try:
+            try:  # inner try ensures receiver is always cancelled in finally
                 last_screenshot_hash = None
 
                 while True:
@@ -146,23 +147,45 @@ async def run_live_stream(
                             if grandparents_mode
                             else f"Task complete. {summary}"
                         )
-                        # Inject the result — Gemini will speak it in the same voice
                         await session.send_client_content(
-                            turns=types.Content(
-                                parts=[types.Part(text=speak_text)]
-                            )
+                            turns=types.Content(parts=[types.Part(text=speak_text)])
                         )
-                        await asyncio.sleep(3.5)  # let audio generate and queue before stream cancels
-                        break                     # exit cleanly — agent is done
+                        await asyncio.sleep(3.5)  # let audio generate before stream cancels
+                        break
 
-                    if not browser.page:
-                        await asyncio.sleep(1)
+                    # ── Screenshot source ────────────────────────────────────
+                    # Prefer orchestrator-provided frames (same frame the agent
+                    # is analysing) over an independent capture loop.  Fall back
+                    # to direct capture only when no queue is wired (e.g. tests).
+                    screenshot_bytes: bytes | None = None
+                    if screenshot_queue is not None:
+                        try:
+                            # Wait up to NARRATION_SCREENSHOT_INTERVAL for a new
+                            # frame; if nothing arrives the agent is idle/thinking
+                            # so we stay quiet rather than repeating stale frames.
+                            screenshot_bytes = await asyncio.wait_for(
+                                screenshot_queue.get(),
+                                timeout=NARRATION_SCREENSHOT_INTERVAL,
+                            )
+                        except asyncio.TimeoutError:
+                            # No new frame from orchestrator — agent is still
+                            # thinking or waiting.  Just re-check completion and loop.
+                            continue
+                    else:
+                        # Legacy fallback: capture independently
+                        if not browser.page:
+                            await asyncio.sleep(1)
+                            continue
+                        try:
+                            screenshot_bytes = await browser.capture_screenshot()
+                        except Exception as e:
+                            logger.debug(f"Fallback screenshot error: {e}")
+                        await asyncio.sleep(NARRATION_SCREENSHOT_INTERVAL)
+
+                    if not screenshot_bytes:
                         continue
 
                     try:
-                        screenshot_bytes = await browser.capture_screenshot()
-
-                        # Fix #3: Only send if screen actually changed
                         current_hash = hashlib.md5(screenshot_bytes).hexdigest()
                         if current_hash != last_screenshot_hash:
                             await session.send_realtime_input(
@@ -172,23 +195,23 @@ async def run_live_stream(
                                 )
                             )
                             last_screenshot_hash = current_hash
+                            logger.debug("Live stream: sent new frame to Live API")
                         else:
-                            logger.debug("Screenshot unchanged — skipping narration input")
-
+                            logger.debug("Live stream: frame unchanged, skipping")
                     except Exception as e:
                         logger.debug(f"Screenshot stream error: {e}")
 
-                    await asyncio.sleep(NARRATION_SCREENSHOT_INTERVAL)
-
             except asyncio.CancelledError:
                 logger.info(f"Live stream cancelled for {session_id}")
+            except Exception as loop_err:
+                logger.error(f"Live stream loop error: {loop_err}")
             finally:
                 receiver.cancel()
                 if live_session_ref is not None:
                     live_session_ref[0] = None
                 try:
                     await receiver
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, Exception):
                     pass
 
     except Exception as e:

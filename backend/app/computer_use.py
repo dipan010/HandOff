@@ -4,14 +4,17 @@ import asyncio
 import base64
 import logging
 import hashlib
+import random
 import uuid
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.guardrails import is_login_wall, is_navigation_allowed, PAUSE_GATE_TIMEOUT
 from app.browser_adapters.base_adapter import BrowserAdapter
 from app.websocket import manager as ws_manager
 from app.storage import upload_screenshot
@@ -30,17 +33,73 @@ async def _signal_extension_complete(session_id: str, manager):
 
 from app.pause_gate import get_or_create as get_gate
 
-_last_narration_inject_time = 0.0
+# Per-session last narration time — avoids cross-session rate-limit interference
+_narration_times: dict[str, float] = {}
+
+# ── Accessibility heartbeat ───────────────────────────────────────────────────
+# Periodic "I'm still here" narrations so audio-only users know the agent is
+# alive during long operations (Gemini Computer Use call, page loads, etc.)
+# without these gaps the system goes silent for 3-10 seconds at a stretch.
+
+_HEARTBEAT_MESSAGES = [
+    "Still working on this step.",
+    "Just a moment, reading the page.",
+    "Almost there.",
+    "Thinking about the next move.",
+    "Looking carefully.",
+]
+
+_HEARTBEAT_MESSAGES_GP = [
+    "I'm still here, just looking at the page for you.",
+    "Almost there, give me a moment.",
+    "I'm thinking about what to do next.",
+    "Reading the page carefully so I get this right.",
+    "Just a moment, sweetie.",
+]
+
+
+async def _heartbeat(session_id: str, grandparents_mode: bool, interval: float = 5.0):
+    """Send periodic narration during long-running operations.
+
+    Cancelled by the caller as soon as the operation completes.
+    """
+    messages = _HEARTBEAT_MESSAGES_GP if grandparents_mode else _HEARTBEAT_MESSAGES
+    try:
+        # Wait one interval before the first heartbeat — don't speak if the
+        # operation finishes quickly.
+        await asyncio.sleep(interval)
+        while True:
+            try:
+                await ws_manager.send_narration(session_id, random.choice(messages))
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        pass
+
+
+@asynccontextmanager
+async def _with_heartbeat(session_id: str, grandparents_mode: bool, interval: float = 5.0):
+    """Context manager that runs a heartbeat task for the duration of the block."""
+    task = asyncio.create_task(_heartbeat(session_id, grandparents_mode, interval))
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 
 async def _narrate_action(
+    session_id: str,
     action_name: str,
     action_args: dict,
     last_action_time_ref: list | None,
     live_session_ref: list | None,
     grandparents_mode: bool = False,
 ):
-    global _last_narration_inject_time
-
     # Always update action timestamp for cooldown tracking
     if last_action_time_ref is not None:
         last_action_time_ref[0] = time.time()
@@ -49,12 +108,11 @@ async def _narrate_action(
     if live_session_ref is None or live_session_ref[0] is None:
         return
 
-    # Rate limit — never inject narration faster than every 3 seconds
-    # This prevents audio blur when the agent fires multiple actions quickly
+    # Rate limit — never inject narration faster than every 3 seconds per session
     now = time.time()
-    if now - _last_narration_inject_time < 3.0:
+    if now - _narration_times.get(session_id, 0.0) < 3.0:
         return
-    _last_narration_inject_time = now
+    _narration_times[session_id] = now
 
     # Build plain English description — different phrasing per mode
     if action_name in ("type_text_at", "type"):
@@ -87,16 +145,6 @@ async def _narrate_action(
         )
     except Exception as e:
         logger.debug(f"Live action narration skipped: {e}")
-
-SENSITIVE_DOMAINS = [
-    "accounts.google.com", "login.", "signin.", "auth.",
-    "paypal.com", "pay.", "checkout.", "payment.",
-    "facebook.com/login", "twitter.com/login", "netflix.com/login",
-]
-
-def _is_login_wall(url: str) -> bool:
-    if not url: return False
-    return any(d in url for d in SENSITIVE_DOMAINS)
 
 def _action_to_plain_english(action_name: str, args: dict) -> str:
     if action_name in ["click_at", "click", "left_click"]:
@@ -142,8 +190,15 @@ async def _pause_and_wait(
         "needs_input": needs_input,
     })
 
-    # Block here — no timeout, agent waits as long as the human needs
-    await gate.event.wait()
+    # Block until the user responds — or until PAUSE_GATE_TIMEOUT seconds pass.
+    # The timeout prevents abandoned sessions from leaking coroutines indefinitely.
+    try:
+        await asyncio.wait_for(gate.event.wait(), timeout=PAUSE_GATE_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Pause gate timed out after {PAUSE_GATE_TIMEOUT}s — auto-cancelling session {session_id}"
+        )
+        return False, None
     return gate.approved, gate.user_input
 
 
@@ -156,7 +211,8 @@ async def run_agent_loop(
     grandparents_mode: bool = False,
     last_action_time_ref: list | None = None,
     completion_text_ref: list | None = None,
-    live_session_ref: list | None = None,  # holds the live session so agent loop can push into it
+    live_session_ref: list | None = None,
+    screenshot_queue: asyncio.Queue | None = None,
 ):
     """Execute the Computer Use agent loop.
 
@@ -168,8 +224,12 @@ async def run_agent_loop(
     6. Capture new screenshot
     7. Repeat until task complete or max turns reached
     """
+    if not settings.GOOGLE_API_KEY:
+        await ws_manager.send_error(session_id, "GOOGLE_API_KEY is not set. Configure it in your .env file.")
+        return
+
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-    
+
     post_action_sleep = 2.0 if patience_mode else 0.5
     post_nav_sleep = 4.0 if patience_mode else 1.0
 
@@ -209,8 +269,17 @@ async def run_agent_loop(
         await ws_manager.send_status(session_id, "navigating", f"Opening {start_url}", grandparents_mode)
         page = browser.page
         if page:
-            await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(post_nav_sleep)
+            async with _with_heartbeat(session_id, grandparents_mode):
+                try:
+                    await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
+                except Exception as nav_err:
+                    logger.warning(f"Navigation to {start_url} failed: {nav_err}")
+                    await ws_manager.send_status(
+                        session_id, "thinking",
+                        f"Could not open {start_url} — continuing anyway",
+                        grandparents_mode
+                    )
+                await asyncio.sleep(post_nav_sleep)
 
     # Building optimization: tell the agent the browser is already open
     contents: list[types.Content] = [
@@ -250,6 +319,14 @@ async def run_agent_loop(
         # Send screenshot to frontend
         await ws_manager.send_screenshot(session_id, screenshot_b64, turn + 1)
 
+        # Share screenshot with the live stream so it narrates from the same
+        # frame the agent is analysing — not from its own independent clock.
+        if screenshot_queue is not None:
+            try:
+                screenshot_queue.put_nowait(screenshot_bytes)
+            except asyncio.QueueFull:
+                pass  # live stream is behind; drop oldest implicitly via maxsize
+
         # Upload to Cloud Storage (async, non-blocking)
         asyncio.create_task(
             upload_screenshot(session_id, turn + 1, screenshot_bytes)
@@ -271,29 +348,31 @@ async def run_agent_loop(
         )
 
         # Call Gemini Computer Use model (retry on 503/429 — temporary overload)
+        # Heartbeat narrates during the call so audio-only users hear progress.
         response = None
         last_error = None
         max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=settings.COMPUTER_USE_MODEL,
-                    contents=contents,
-                    config=config,
-                )
-                last_error = None
-                break
-            except Exception as e:
-                last_error = e
-                err_str = str(e).upper()
-                is_retryable = "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
-                if is_retryable and attempt < max_retries - 1:
-                    delay = 2 ** (attempt + 1)  # 2, 4, 8 seconds
-                    logger.warning(f"Gemini API overload ({e}). Retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(delay)
-                else:
+        async with _with_heartbeat(session_id, grandparents_mode):
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=settings.COMPUTER_USE_MODEL,
+                        contents=contents,
+                        config=config,
+                    )
+                    last_error = None
                     break
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e).upper()
+                    is_retryable = "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                    if is_retryable and attempt < max_retries - 1:
+                        delay = 2 ** (attempt + 1)  # 2, 4, 8 seconds
+                        logger.warning(f"Gemini API overload ({e}). Retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(delay)
+                    else:
+                        break
         if last_error is not None:
             err_str = str(last_error).upper()
             if "503" in err_str or "UNAVAILABLE" in err_str:
@@ -495,9 +574,22 @@ async def run_agent_loop(
                     return
                 continue  # re-enter loop, Gemini will proceed
             
+            # Domain policy — block unsafe / disallowed navigate targets before execution
+            if action_name in ("navigate", "open_web_browser"):
+                nav_url = action_args.get("url", "")
+                nav_ok, nav_reason = is_navigation_allowed(
+                    nav_url,
+                    settings.NAV_BLOCKED_DOMAINS,
+                    settings.NAV_ALLOWED_DOMAINS,
+                )
+                if not nav_ok:
+                    logger.warning(f"Navigation blocked by policy: {nav_reason}")
+                    await ws_manager.send_error(session_id, f"Navigation blocked: {nav_reason}")
+                    return
+
             # Auto-detect login walls from current URL
             current_url = await browser.get_current_url()
-            if _is_login_wall(current_url):
+            if is_login_wall(current_url):
                 approved, typed_text = await _pause_and_wait(
                     session_id,
                     reason='login_wall',
@@ -518,9 +610,12 @@ async def run_agent_loop(
             # Use Plain English if Grandparents Mode is on
             status_msg = plain_action if grandparents_mode else f"Executing: {action_name}"
 
-            # 1. PREVIEW: show what we are ABOUT to do (Section 6.2)
+            # 1. PREVIEW: announce what we are ABOUT to do so audio-only users
+            # can hear it before the action fires.  Longer delay in grandparents
+            # mode gives the browser TTS time to finish speaking the preview.
+            preview_delay = 2.0 if grandparents_mode else 0.8
             await ws_manager.send_action_preview(session_id, plain_action)
-            await asyncio.sleep(0.8) # 800ms preview delay
+            await asyncio.sleep(preview_delay)
 
             # 2. STATUS: show we are doing it now
             await ws_manager.send_status(
@@ -534,6 +629,7 @@ async def run_agent_loop(
             result = await browser.execute_action(action_name, action_args)
             
             await _narrate_action(
+                session_id,
                 action_name,
                 action_args,
                 last_action_time_ref,
@@ -601,3 +697,4 @@ async def run_agent_loop(
     await ws_manager.send_task_complete(session_id, summary)
     await update_session_state(session_id, "completed", "Max turns reached")
     await _signal_extension_complete(session_id, ws_manager)
+    _narration_times.pop(session_id, None)

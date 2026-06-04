@@ -5,16 +5,18 @@ import { Archive, Clock } from 'lucide-react';
 export function SessionHistory() {
     const [sessions, setSessions] = useState<SessionInfo[]>([]);
     const [loading, setLoading] = useState(true);
+    const [fetchError, setFetchError] = useState<string | null>(null);
 
     useEffect(() => {
         const fetchSessions = async () => {
             try {
                 const res = await fetch('http://localhost:8080/sessions');
-                if (!res.ok) throw new Error('Failed to fetch');
+                if (!res.ok) throw new Error(`Server returned ${res.status}`);
                 const data = await res.json();
                 setSessions(data.sessions || []);
             } catch (err) {
                 console.error(err);
+                setFetchError('Could not load session history.');
             } finally {
                 setLoading(false);
             }
@@ -34,6 +36,10 @@ export function SessionHistory() {
                 {loading ? (
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', textAlign: 'center', padding: '1rem' }}>
                         Loading archives...
+                    </div>
+                ) : fetchError ? (
+                    <div style={{ color: '#ef4444', fontSize: '0.9rem', textAlign: 'center', padding: '1rem' }}>
+                        {fetchError}
                     </div>
                 ) : sessions.length === 0 ? (
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', textAlign: 'center', padding: '1rem' }}>

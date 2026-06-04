@@ -30,7 +30,7 @@ export function SafetyConfirmModal({ request, onRespond }: SafetyConfirmModalPro
                 <div className="flex gap-4">
                     <button
                         className="flex-1 px-4 py-4 rounded-xl border-2 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors font-bold flex items-center justify-center gap-2"
-                        onClick={() => onRespond(request.action.original_call_id || "", false)}
+                        onClick={() => onRespond(request.request_id, false)}
                     >
                         <XCircle size={18} />
                         Deny Access
@@ -38,7 +38,7 @@ export function SafetyConfirmModal({ request, onRespond }: SafetyConfirmModalPro
 
                     <button
                         className="flex-1 px-4 py-4 rounded-xl bg-primary text-white hover:bg-primary/90 transition-all shadow-lg active:scale-95 font-bold flex items-center justify-center gap-2"
-                        onClick={() => onRespond(request.action.original_call_id || "", true)}
+                        onClick={() => onRespond(request.request_id, true)}
                     >
                         <CheckCircle size={18} />
                         Authorize Proceed

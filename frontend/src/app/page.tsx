@@ -18,6 +18,8 @@ export default function Home() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const narrationQueue = useRef<string[]>([]);
   const isDisplaying = useRef(false);
+  const narrationEnabledRef = useRef(narrationEnabled);
+  useEffect(() => { narrationEnabledRef.current = narrationEnabled; }, [narrationEnabled]);
 
   const {
     isConnected,
@@ -27,6 +29,7 @@ export default function Home() {
     screenshot,
     actions,
     narration,
+    actionPreview,
     safetyRequest,
     pausePrompt,
     error,
@@ -38,7 +41,7 @@ export default function Home() {
   // Generate a new session ID on mount
   useEffect(() => {
     if (!sessionId) {
-      setSessionId(Math.random().toString(36).substring(2, 10));
+      setSessionId(crypto.randomUUID().replace(/-/g, '').slice(0, 8));
     }
   }, [sessionId]);
 
@@ -61,13 +64,14 @@ export default function Home() {
     isDisplaying.current = true;
     const next = narrationQueue.current.shift()!;
     setDisplayText(next);
-    if (narrationEnabled) {
+    // Use ref so toggling narrationEnabled mid-queue reads the current value
+    if (narrationEnabledRef.current) {
       speak(next);
     }
 
     // Hold each message for at least 3 seconds
     setTimeout(displayNextNarration, 3000);
-  }, [narrationEnabled, speak]);
+  }, [speak]); // narrationEnabled intentionally read via ref
 
   useEffect(() => {
     if (narration) {
@@ -77,6 +81,22 @@ export default function Home() {
       }
     }
   }, [narration, displayNextNarration]);
+
+  // Speak status detail changes so audio-only users always know what step the
+  // agent is on — not just when the Live API has something to say.
+  useEffect(() => {
+    if (narrationEnabledRef.current && statusDetail) {
+      speak(statusDetail);
+    }
+  }, [statusDetail, speak]);
+
+  // Speak the action preview before the action fires.  Backend gives us a
+  // 0.8s (or 2s in grandparents mode) lead so the TTS has time to be heard.
+  useEffect(() => {
+    if (narrationEnabledRef.current && actionPreview) {
+      speak(`About to ${actionPreview.toLowerCase()}.`);
+    }
+  }, [actionPreview, speak]);
 
   // Stop speech when task ends
   useEffect(() => {

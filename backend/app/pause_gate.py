@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -12,11 +13,16 @@ class PauseGate:
 
 # Module-level registry keyed by session_id
 _gates: dict[str, PauseGate] = {}
+_gates_lock = threading.Lock()
+
 
 def get_or_create(session_id: str) -> PauseGate:
-    if session_id not in _gates:
-        _gates[session_id] = PauseGate()
-    return _gates[session_id]
+    with _gates_lock:
+        if session_id not in _gates:
+            _gates[session_id] = PauseGate()
+        return _gates[session_id]
+
 
 def release(session_id: str):
-    _gates.pop(session_id, None)
+    with _gates_lock:
+        _gates.pop(session_id, None)

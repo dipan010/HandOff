@@ -18,6 +18,7 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.guardrails import validate_task, validate_url, MAX_TASK_LENGTH
 from app.websocket import manager as ws_manager
 from app.browser_adapters.base_adapter import BrowserAdapter
 from app.computer_use import run_agent_loop
@@ -46,11 +47,18 @@ async def lifespan(app: FastAPI):
     """Application lifespan — startup and shutdown."""
     logger.info("🚀 UDAA Backend starting up...")
     yield
-    # Cleanup active sessions on shutdown
-    for sid, session in active_sessions.items():
+    # Cleanup active sessions on shutdown — copy dict to avoid mutation during iteration
+    for sid, session in list(active_sessions.items()):
+        for key in ["agent_task", "live_task"]:
+            t = session.get(key)
+            if t and not t.done():
+                t.cancel()
         browser: BrowserAdapter = session.get("browser")
         if browser:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
     logger.info("UDAA Backend shut down")
 
 
@@ -99,6 +107,12 @@ async def health_check():
 @app.post("/tasks", response_model=TaskResponse)
 async def create_task(request: TaskRequest):
     """Create a new task (REST alternative to WebSocket)."""
+    task_err = validate_task(request.task)
+    if task_err:
+        raise HTTPException(status_code=422, detail=task_err)
+    url_err = validate_url(request.start_url)
+    if url_err:
+        raise HTTPException(status_code=422, detail=url_err)
     session_id = str(uuid.uuid4())[:8]
     await create_session(session_id, request.task, request.start_url)
     return TaskResponse(
@@ -162,22 +176,54 @@ async def get_sessions():
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Main WebSocket endpoint for real-time agent communication."""
+    # Optional shared-secret auth — skipped when WS_API_KEY is not configured
+    if settings.WS_API_KEY:
+        token = (
+            websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            or websocket.query_params.get("api_key", "")
+        )
+        if not token or token != settings.WS_API_KEY:
+            await websocket.close(code=4001)
+            return
     await ws_manager.connect(session_id, websocket)
 
     try:
         while True:
             data = await websocket.receive_text()
-            message = json.loads(data)
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON from WebSocket client, ignoring: {data[:200]}")
+                continue
             msg_type = message.get("type", "")
 
             if msg_type == "task_start":
-                task = message["data"]["task"]
-                start_url = message["data"].get("start_url", "")
-                execution_mode = message["data"].get("execution_mode", "remote")
+                msg_data = message.get("data", {})
+                task = msg_data.get("task", "")
+                if not task:
+                    logger.warning("task_start message missing 'task' field, ignoring")
+                    continue
 
-                patience_mode = message["data"].get("patience_mode", False)
-                grandparents_mode = message["data"].get("grandparents_mode", False)
-                narration_enabled = message["data"].get("narration_enabled", True)
+                # Guard: enforce task length limit to constrain prompt-injection surface
+                if len(task) > MAX_TASK_LENGTH:
+                    await ws_manager.send_error(
+                        session_id,
+                        f"Task too long ({len(task)} chars). Maximum is {MAX_TASK_LENGTH}.",
+                    )
+                    continue
+
+                start_url = msg_data.get("start_url", "")
+
+                # Guard: reject unsafe URL schemes and private/internal targets
+                url_err = validate_url(start_url)
+                if url_err:
+                    await ws_manager.send_error(session_id, url_err)
+                    continue
+                execution_mode = msg_data.get("execution_mode", "remote")
+
+                patience_mode = msg_data.get("patience_mode", False)
+                grandparents_mode = msg_data.get("grandparents_mode", False)
+                narration_enabled = msg_data.get("narration_enabled", True)
 
                 logger.info(
                     f"Task start: session={session_id}, mode={execution_mode}, task='{task}', url='{start_url}', patience={patience_mode}, gp_mode={grandparents_mode}, narration={narration_enabled}"
@@ -185,6 +231,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 # Create session in Firestore
                 await create_session(session_id, task, start_url)
+
+                # Clean up any existing session for this ID before starting a new one
+                if session_id in active_sessions:
+                    old = active_sessions.pop(session_id)
+                    for key in ["agent_task", "live_task"]:
+                        t = old.get(key)
+                        if t and not t.done():
+                            t.cancel()
+                    old_browser = old.get("browser")
+                    if old_browser:
+                        try:
+                            await old_browser.close()
+                        except Exception:
+                            pass
 
                 # Initialize live browser adapter
                 try:
@@ -215,16 +275,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 last_action_time_ref = [0.0]
                 completion_text_ref = [None]
                 live_session_ref = [None]  # holds the live session so agent loop can push into it
+                # Bounded queue: orchestrator pushes its screenshots here so the
+                # live stream always narrates from the same frame the agent is analysing.
+                screenshot_queue: asyncio.Queue = asyncio.Queue(maxsize=3)
 
                 agent_task = asyncio.create_task(
-                    run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                    run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref, screenshot_queue)
                 )
-                
+
                 # Only start narration stream if enabled
                 live_task = None
                 if narration_enabled:
                     live_task = asyncio.create_task(
-                        run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                        run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref, screenshot_queue)
                     )
 
                 active_sessions[session_id]["agent_task"] = agent_task
@@ -258,12 +321,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                 except Exception:
                                     pass
 
-                asyncio.create_task(on_agent_done(agent_task))
+                done_task = asyncio.create_task(on_agent_done(agent_task))
+                active_sessions[session_id]["done_task"] = done_task
 
             elif msg_type == "safety_response":
                 # User approved or rejected a safety confirmation
-                approved = message["data"].get("approved", False)
-                user_input = message["data"].get("user_input", None)
+                resp_data = message.get("data", {})
+                approved = resp_data.get("approved", False)
+                user_input = resp_data.get("user_input", None)
                 logger.info(
                     f"Safety response: approved={approved}, input={'provided' if user_input else 'none'}"
                 )
@@ -313,7 +378,11 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            message = json.loads(data)
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON from extension WebSocket, ignoring: {data[:200]}")
+                continue
             msg_type = message.get("type", "")
 
             if msg_type == "screen_frame":

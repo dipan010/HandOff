@@ -22,12 +22,13 @@ interface UseWebSocketReturn {
     screenshot: string | null;
     actions: { step: number; data: AgentAction }[];
     narration: string;
+    actionPreview: string;
     safetyRequest: SafetyConfirmRequest | null;
     pausePrompt: PausePromptData | null;
     taskSummary: string | null;
     error: string | null;
     startTask: (task: string, start_url: string, patienceMode?: boolean, grandparentsMode?: boolean, narrationEnabled?: boolean) => void;
-    sendSafetyResponse: (request_id: string, approved: boolean) => void;
+    sendSafetyResponse: (request_id: string, approved: boolean, userInput?: string) => void;
     cancelTask: () => void;
 }
 
@@ -39,6 +40,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
     const [screenshot, setScreenshot] = useState<string | null>(null);
     const [actions, setActions] = useState<{ step: number; data: AgentAction }[]>([]);
     const [narration, setNarration] = useState('');
+    const [actionPreview, setActionPreview] = useState('');
     const [safetyRequest, setSafetyRequest] = useState<SafetyConfirmRequest | null>(null);
     const [pausePrompt, setPausePrompt] = useState<PausePromptData | null>(null);
     const [taskSummary, setTaskSummary] = useState<string | null>(null);
@@ -48,6 +50,10 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const reconnectAttempts = useRef(0);
     const intentionalClose = useRef(false);
+    const statusRef = useRef<AgentStatus>('idle');
+
+    // Keep statusRef in sync so ws.onclose closure doesn't read stale status
+    useEffect(() => { statusRef.current = status; }, [status]);
 
     const audioQueue = useRef<AudioBuffer[]>([]);
     const isPlayingAudio = useRef(false);
@@ -82,13 +88,16 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
             setScreenshot(null);
             setActions([]);
             setNarration('');
+            setActionPreview('');
             setSafetyRequest(null);
             setPausePrompt(null);
             setTaskSummary(null);
             setError(null);
         }
 
-        const wsUrl = `ws://localhost:8080/ws/${sessionId}`;
+        const wsBase = `ws://localhost:8080/ws/${sessionId}`;
+        const apiKey = process.env.NEXT_PUBLIC_WS_API_KEY;
+        const wsUrl = apiKey ? `${wsBase}?api_key=${encodeURIComponent(apiKey)}` : wsBase;
         const ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
@@ -121,6 +130,12 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
 
                     case 'narration':
                         setNarration(data.text);
+                        break;
+
+                    case 'action_preview':
+                        // Pre-action announcement so audio-only users hear what's
+                        // about to happen 0.8s-2s before it fires.
+                        setActionPreview(data.text);
                         break;
 
                     case 'safety_confirm':
@@ -199,7 +214,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
             setIsConnected(false);
 
             // Auto-reconnect with exponential backoff if not explicitly completed/cancelled
-            if (status !== 'completed' && status !== 'cancelled' && status !== 'error') {
+            if (statusRef.current !== 'completed' && statusRef.current !== 'cancelled' && statusRef.current !== 'error') {
                 const timeout = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
                 console.log(`WebSocket disconnected. Reconnecting in ${timeout}ms...`);
                 reconnectAttempts.current += 1;
@@ -234,6 +249,13 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
                 wsRef.current.onerror = null;
                 wsRef.current.close();
             }
+            // Drain audio queue and close the shared AudioContext
+            audioQueue.current = [];
+            isPlayingAudio.current = false;
+            if (_audioCtx && _audioCtx.state !== 'closed') {
+                _audioCtx.close().catch(() => {});
+                _audioCtx = null;
+            }
         };
     }, [connect]);
 
@@ -251,6 +273,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         setScreenshot(null);
         setActions([]);
         setNarration('');
+        setActionPreview('');
         setSafetyRequest(null);
         setPausePrompt(null);
         setTaskSummary(null);
@@ -262,12 +285,12 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         }));
     }, []);
 
-    const sendSafetyResponse = useCallback((request_id: string, approved: boolean) => {
+    const sendSafetyResponse = useCallback((request_id: string, approved: boolean, userInput?: string) => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
         wsRef.current.send(JSON.stringify({
             type: 'safety_response',
-            data: { request_id, approved }
+            data: { request_id, approved, user_input: userInput ?? null }
         }));
 
         setSafetyRequest(null);
@@ -296,6 +319,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         screenshot,
         actions,
         narration,
+        actionPreview,
         safetyRequest,
         pausePrompt,
         taskSummary,
