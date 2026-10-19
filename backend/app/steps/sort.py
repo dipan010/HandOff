@@ -28,6 +28,15 @@ _GREETING = re.compile(
     re.IGNORECASE,
 )
 
+# Words that mean the answer must come from a live website, never from memory.
+_LIVE_FACTS = re.compile(
+    r"\b(today|tonight|tomorrow|now|right now|currently|current|latest|recent|this (week|month|year)|"
+    r"price|prices|cost|costs|cheapest|weather|forecast|temperature|news|headlines|score|scores|"
+    r"schedule|timetable|next (train|bus|flight)|trains?|flights?|buses|available|availability|in stock|"
+    r"open(ing)? hours|stock price|exchange rate|my (email|emails|inbox|calendar|account|orders?|bank|messages))\b",
+    re.IGNORECASE,
+)
+
 _GREETING_REPLIES = {
     "thanks": "You're welcome! Anything else I can do?",
     "default": "Hello! Tell me what you'd like to do and I'll take care of it.",
@@ -44,6 +53,7 @@ Answer with JSON only:
 Rules:
 - "chat" only if the request can be fully answered in words with no website: greetings, small talk, general knowledge, arithmetic. Put a short, friendly answer (max 2 sentences) in "reply".
 - Anything that mentions a website, searching, booking, buying, playing, opening, reading a page, or uses the start page is a "task" with "reply": null.
+- Anything about right now or that changes over time is a "task", never "chat": today, now, latest, current, prices, weather, news, scores, schedules, trains, flights, availability, opening hours, or the user's own accounts, email, calendar or orders. Never guess these.
 - "quick": one or two obvious actions (open a site, play a video, one search).
 - "hard": several parts, forms, dates, comparisons, logins or unclear wording.
 - If unsure, choose "task" and "hard"."""
@@ -57,6 +67,10 @@ def quick_rule(task: str) -> Sorted | None:
     word = match.group(1).lower()
     key = "thanks" if word.startswith("thank") or word == "cheers" else "default"
     return Sorted(kind="chat", effort="quick", reply=_GREETING_REPLIES[key])
+
+
+def needs_live_facts(task: str) -> bool:
+    return bool(_LIVE_FACTS.search(task or ""))
 
 
 async def sort_request(task: str, start_url: str, caller: Caller, model: str, backup: str | None) -> Sorted:
@@ -74,7 +88,7 @@ async def sort_request(task: str, start_url: str, caller: Caller, model: str, ba
     effort = answer.get("effort") if isinstance(answer, dict) else None
     reply = answer.get("reply") if isinstance(answer, dict) else None
 
-    # A start page always means the user wants the browser used.
-    if kind == "chat" and reply and not start_url:
+    # A start page, or a question about live facts, always means the browser is needed.
+    if kind == "chat" and reply and not start_url and not needs_live_facts(task):
         return Sorted(kind="chat", effort="quick", reply=str(reply).strip())
     return Sorted(kind="task", effort=effort if effort in ("quick", "hard") else "hard")

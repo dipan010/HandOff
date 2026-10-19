@@ -121,3 +121,17 @@ def test_trim_screenshots_keeps_newest():
     assert len(images) == 2
     assert trimmed[1].parts[0].text == "[older screenshot removed]"
     assert trimmed[0].parts[0].text == "start"
+
+
+async def test_live_facts_are_never_answered_from_memory():
+    caller = FakeCaller(sort=[{"kind": "chat", "effort": "quick", "reply": "It's sunny and 28°C."}])
+    for question in ["What's the weather in Bangalore today?", "when is the next train to Mumbai",
+                     "price of an iPhone 16", "any new emails in my inbox?"]:
+        result = await sort_request(question, "", caller, "sorter", "backup")
+        assert result.kind == "task", question
+
+
+async def test_general_knowledge_can_still_be_chat():
+    caller = FakeCaller(sort=[{"kind": "chat", "effort": "quick", "reply": "Paris."}])
+    result = await sort_request("What is the capital of France?", "", caller, "sorter", "backup")
+    assert result.kind == "chat"

@@ -130,3 +130,72 @@ async def test_gemini_error_is_shown_plainly():
     ui, _ = await start(caller)
     assert "busy" in sent(ui, "send_error")[0][0]
     assert sent(ui, "send_task_complete") == []
+
+
+async def test_chat_never_opens_the_browser():
+    opened = []
+
+    async def open_browser():
+        opened.append(True)
+
+    caller = FakeCaller(sort=[{"kind": "chat", "effort": "quick", "reply": "Hi!"}])
+    await run_task("s1", "how are you?", "", FakeBrowser(), caller=caller, ui=FakeUI(),
+                   cfg=cfg(), timing=NO_WAIT, open_browser=open_browser)
+    assert opened == []
+
+
+async def test_tasks_open_the_browser_once_before_acting():
+    order = []
+    browser = FakeBrowser()
+
+    async def open_browser():
+        order.append("open")
+
+    original = browser.execute_action
+
+    async def act(name, args):
+        order.append(name)
+        return await original(name, args)
+
+    browser.execute_action = act
+    caller = FakeCaller(actions=[
+        action_reply(call=("click_at", {"x": 1, "y": 1})),
+        action_reply("TASK COMPLETE: done"),
+    ])
+    await run_task("s1", "play lofi", "", browser, caller=caller, ui=FakeUI(),
+                   cfg=cfg(), timing=NO_WAIT, open_browser=open_browser)
+    assert order[0] == "open" and order.count("open") == 1
+
+
+async def test_last_step_ending_with_step_done_still_gives_the_answer():
+    caller = FakeCaller(
+        plan=[{"steps": [{"title": "Open the DeepMind article", "done_when": "Article is open"}]}],
+        actions=[
+            action_reply("STEP DONE: the article is open"),
+            action_reply("TASK COMPLETE: DeepMind was founded by Demis Hassabis, Shane Legg and Mustafa Suleyman."),
+        ],
+    )
+    ui, _ = await start(caller)
+    summary = sent(ui, "send_task_complete")[0][0]
+    assert "Demis Hassabis" in summary
+
+
+async def test_last_step_is_told_to_answer():
+    caller = FakeCaller(plan=[{"steps": [
+        {"title": "Search", "done_when": "Results"},
+        {"title": "Read the answer", "done_when": "Answer visible"},
+    ]}], actions=[action_reply("STEP DONE: results"), action_reply("TASK COMPLETE: 42")])
+    seen = []
+    original = caller.ask
+
+    async def spy(model, contents, config=None):
+        if config is not None and getattr(config, "tools", None):
+            seen.append(contents[0].parts[0].text)
+        return await original(model, contents, config)
+
+    caller.ask = spy
+    await start(caller)
+    first_step_prompts = [t for t in seen if "Work on step 1" in t]
+    last_step_prompts = [t for t in seen if "Work on step 2" in t]
+    assert first_step_prompts and "LAST step" not in first_step_prompts[0]
+    assert last_step_prompts and "LAST step" in last_step_prompts[0]

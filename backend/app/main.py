@@ -182,11 +182,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 # Create session in Firestore
                 await create_session(session_id, task, start_url)
 
-                # Initialize live browser adapter
+                use_steps = settings.TASK_FLOW != "classic"
+
+                # Initialize live browser adapter. The steps flow opens the tab
+                # later, only once it knows the request needs the browser.
                 try:
                     from app.browser.live_tab import LiveBrowserAdapter
                     browser = LiveBrowserAdapter(session_id)
-                    await browser.launch(start_url=start_url)
+                    if not use_steps:
+                        await browser.launch(start_url=start_url)
                 except Exception as launch_err:
                     logger.error(f"Browser launch failed: {launch_err}")
                     await ws_manager.send_error(
@@ -212,20 +216,35 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 completion_text_ref = [None]
                 live_session_ref = [None]  # holds the live session so agent loop can push into it
 
-                task_runner = run_agent_loop if settings.TASK_FLOW == "classic" else run_task
-                agent_task = asyncio.create_task(
-                    task_runner(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
-                )
-                
-                # Only start narration stream if enabled
-                live_task = None
-                if narration_enabled:
-                    live_task = asyncio.create_task(
-                        run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                def start_narration(browser=browser, task=task, grandparents_mode=grandparents_mode,
+                                    last_action_time_ref=last_action_time_ref,
+                                    completion_text_ref=completion_text_ref,
+                                    live_session_ref=live_session_ref):
+                    if narration_enabled:
+                        active_sessions[session_id]["live_task"] = asyncio.create_task(
+                            run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                        )
+
+                async def open_browser(browser=browser, start_url=start_url):
+                    """Called by the steps flow once it knows this is a real task."""
+                    try:
+                        await browser.launch(start_url=start_url)
+                    except Exception as launch_err:
+                        raise RuntimeError(f"Failed to launch browser: {launch_err}") from launch_err
+                    start_narration()
+
+                if use_steps:
+                    agent_task = asyncio.create_task(
+                        run_task(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref,
+                                 open_browser=open_browser)
                     )
+                else:
+                    agent_task = asyncio.create_task(
+                        run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                    )
+                    start_narration()
 
                 active_sessions[session_id]["agent_task"] = agent_task
-                active_sessions[session_id]["live_task"] = live_task
                 active_sessions[session_id]["completion_text_ref"] = completion_text_ref
                 active_sessions[session_id]["live_session_ref"] = live_session_ref
 

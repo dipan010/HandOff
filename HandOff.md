@@ -37,6 +37,7 @@ Ensure `backend/.env` has:
 - `COMPUTER_USE_MODEL=gemini-2.5-computer-use-preview-10-2025`
 - `LIVE_MODEL=gemini-2.5-flash-native-audio-preview-12-2025`
 - `USE_FIRESTORE=false` (unless you have a Service Account key).
+- `TASK_FLOW=steps` (plan, do, check; the default) or `TASK_FLOW=classic` (the original single loop).
 
 🤝 Collaboration Protocol
 - **Start Backend**: `cd backend && python -m app.main` (inside the venv)

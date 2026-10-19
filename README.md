@@ -44,6 +44,8 @@ python -m app.main     # serves on http://127.0.0.1:8080
 
 Run the tests with `python -m pytest` from `backend/`.
 
+**How tasks run.** By default (`TASK_FLOW=steps`) HandOff first decides whether a request is simple chat (answered straight away, no browser) or a task. For tasks it writes a short list of steps, works through them one action at a time, checks after each action that something actually changed, and checks each finished step against the screen. If a step keeps failing it rewrites the remaining steps. Set `TASK_FLOW=classic` in `backend/.env` to go back to the original single loop. The models used for sorting, planning and checking are set with `SORT_MODEL`, `FAST_MODEL`, `STRONG_MODEL` and `BACKUP_MODEL` (see `backend/.env.example`).
+
 ### 2. Frontend Setup
 ```bash
 cd frontend

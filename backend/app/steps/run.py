@@ -74,6 +74,16 @@ ACTION_RULES = (
     "Use 'click_at' inside them only if 'select_option' is not available."
 )
 
+LAST_STEP_NOTE = (
+    "This is the LAST step. When it is finished, reply 'TASK COMPLETE: <summary for the user>' "
+    "(not STEP DONE). If the user asked a question, the summary must contain the answer.\n\n"
+)
+
+ASK_FOR_SUMMARY = (
+    "Every step is finished. Reply with 'TASK COMPLETE: <summary for the user>'. "
+    "If the user asked a question, give the answer from what is on screen. Do not take any more actions."
+)
+
 _MARKER = re.compile(r"(TASK COMPLETE|STEP DONE)\s*:?\s*(.*)", re.IGNORECASE | re.DOTALL)
 
 
@@ -183,6 +193,7 @@ class TaskRun:
             return ""
 
     def opening_message(self, step: Step, plan: list[Step]) -> types.Content:
+        is_last = step is plan[-1]
         plan_text = "\n".join(f"{s.number}. {s.title}" for s in plan)
         recent = "\n".join(self.history[-15:]) or "(nothing yet)"
         start = f"The browser started on: {self.start_url}\n" if self.start_url else ""
@@ -192,7 +203,8 @@ class TaskRun:
             f"Actions so far:\n{recent}\n\n"
             f"Work on step {step.number} now: {step.title}\n"
             f"This step is finished when: {step.done_when}\n\n"
-            "The browser is already open. Do NOT call open_web_browser."
+            + (LAST_STEP_NOTE if is_last else "")
+            + "The browser is already open. Do NOT call open_web_browser."
         )
         return types.Content(role="user", parts=[types.Part(text=text)])
 
@@ -261,6 +273,10 @@ class TaskRun:
                 if check.ok:
                     kind = "task_done" if marker and marker[0] == "task" else "done"
                     summary = (marker[1] if marker else "") or check.reason
+                    if kind == "done" and step is plan[-1]:
+                        # Make sure the user hears the result, not just "step finished".
+                        summary = await self.final_summary(contents, action_config) or summary
+                        kind = "task_done"
                     return StepOutcome(kind, summary)
                 failures += 1
                 last_failure = check.reason
@@ -317,6 +333,19 @@ class TaskRun:
                 + "\n\nA new screenshot follows. If this step is finished say 'STEP DONE: ...'. "
                 "If the whole task is finished say 'TASK COMPLETE: ...'. Otherwise give the ONE next action."
             ))]))
+
+    async def final_summary(self, contents: list, action_config) -> str:
+        """Ask the action model for the closing summary (with the answer, if any)."""
+        contents = contents + [types.Content(role="user", parts=[types.Part(text=ASK_FOR_SUMMARY)])]
+        try:
+            response = await self.caller.ask(self.cfg.COMPUTER_USE_MODEL, contents, action_config)
+            parts = response.candidates[0].content.parts
+        except Exception as err:
+            logger.warning(f"Could not get a closing summary: {err}")
+            return ""
+        text = " ".join(p.text for p in parts if getattr(p, "text", None))
+        marker = find_marker(text)
+        return (marker[1] if marker else text).strip()
 
     async def act(self, calls) -> tuple[StepOutcome | None, list[dict], list[str]]:
         """Carry out the model's actions. Returns (early outcome or None, results, action names)."""
@@ -383,8 +412,13 @@ async def run_task(
     ui=default_ui,
     cfg=None,
     timing: Timing | None = None,
+    open_browser=None,
 ) -> None:
-    """Same arguments as the classic loop, so main.py can call either."""
+    """Same arguments as the classic loop, so main.py can call either.
+
+    `open_browser` is awaited once the request turns out to be a real task;
+    it opens the tab and starts narration. Chat never opens anything.
+    """
     cfg = cfg or get_settings()
     run = TaskRun(
         session_id=session_id, task=task, start_url=start_url, browser=browser,
@@ -402,6 +436,8 @@ async def run_task(
         await run.finish(sorted_request.reply, "Quick reply")
         return
 
+    if open_browser is not None:
+        await open_browser()
     await run.say_on_it()
     plan_model = cfg.STRONG_MODEL if sorted_request.effort == "hard" else cfg.FAST_MODEL
     await run.status("thinking", "Planning the steps...")

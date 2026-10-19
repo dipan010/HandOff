@@ -134,6 +134,7 @@ async def run_live_stream(
 
             try:
                 last_screenshot_hash = None
+                screenshot_error_logged = False
 
                 while True:
                     # Check if agent flagged completion
@@ -176,7 +177,12 @@ async def run_live_stream(
                             logger.debug("Screenshot unchanged — skipping narration input")
 
                     except Exception as e:
-                        logger.debug(f"Screenshot stream error: {e}")
+                        # Warn once, then stay quiet so the log isn't flooded.
+                        if not screenshot_error_logged:
+                            logger.warning(f"Could not send screenshot to narration: {e}")
+                            screenshot_error_logged = True
+                        else:
+                            logger.debug(f"Screenshot stream error: {e}")
 
                     await asyncio.sleep(NARRATION_SCREENSHOT_INTERVAL)
 
