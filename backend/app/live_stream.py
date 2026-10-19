@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
-from app.browser_adapters.base_adapter import BrowserAdapter
+from app.browser.base import BrowserAdapter
 from app.websocket import manager as ws_manager
 
 logger = logging.getLogger(__name__)

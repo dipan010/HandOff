@@ -12,11 +12,11 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
-from app.browser_adapters.base_adapter import BrowserAdapter
+from app.browser.base import BrowserAdapter
 from app.websocket import manager as ws_manager
 from app.storage import upload_screenshot
 from app.firestore_client import update_session_state
-from app.pubsub import publish_action
+from app.action_log import log_action
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -207,10 +207,7 @@ async def run_agent_loop(
     # Navigate to start URL
     if start_url:
         await ws_manager.send_status(session_id, "navigating", f"Opening {start_url}", grandparents_mode)
-        page = browser.page
-        if page:
-            await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(post_nav_sleep)
+        # The tab was already opened at start_url when the session launched.
 
     # Building optimization: tell the agent the browser is already open
     contents: list[types.Content] = [
@@ -527,8 +524,8 @@ async def run_agent_loop(
                 session_id, "executing", status_msg, grandparents_mode
             )
 
-            # Publish to Pub/Sub (for audit trail)
-            await publish_action(session_id, turn + 1, action_name, action_args)
+            # Write to the local action log
+            await log_action(session_id, turn + 1, action_name, action_args)
 
             # Execute the action
             result = await browser.execute_action(action_name, action_args)

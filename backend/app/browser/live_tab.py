@@ -5,7 +5,7 @@ import base64
 import logging
 from typing import Any
 
-from app.browser_adapters.base_adapter import BrowserAdapter
+from app.browser.base import BrowserAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +17,7 @@ class LiveBrowserAdapter(BrowserAdapter):
         self._latest_screenshot_bytes: bytes | None = None
         self._latest_screenshot_time: float = 0
         self._action_result_future: asyncio.Future | None = None
-        self._page = None 
-        self._context = None
-        self._playwright = None
+        self._page = None  # no page object: the extension does the work
 
     @property
     def page(self):

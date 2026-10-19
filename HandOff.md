@@ -4,24 +4,22 @@ Current Status: Version 1.0 (Live Browser Stable)
 Last Updated: 2026-03-14
 
 🚀 Mission Statement
-UDAA is a multimodal AI agent designed to assist users with accessibility needs by autonomously navigating digital interfaces. It observes the screen via real-time screenshots, processes the UI context using Gemini, and executes native browser actions (click, type, scroll).
+HandOff helps people who find websites hard to use. It watches the browser tab through screenshots, asks Gemini what to do next, and carries out real browser actions (click, type, scroll) while narrating out loud.
 
 🛠 Technical Architecture
-The system uses a Hybrid architecture to balance user persistence with AI autonomy.
+The assistant works inside the user's own, signed-in Chrome.
 
 - **Backend**: FastAPI (Python 3.11).
 - **Frontend**: Next.js 15+ (TypeScript, Tailwind CSS).
-- **Browser Control**:
-    - **Remote Mode**: Playwright (Isolated sandboxed browser).
-    - **Live Mode**: Chrome Extension + Python `webbrowser` module. This bypasses profile locks and allows the AI to operate within the user's logged-in Chrome session (Netflix, WhatsApp, etc.).
-- **AI Core**:
-    - **Action Engine**: `gemini-2.5-computer-use-preview-10-2025`.
-    - **Narration Engine**: `gemini-2.0-flash-exp` (via Gemini Live API).
+- **Browser Control**: Chrome extension + Python `webbrowser` module. The backend opens a tab and the extension carries out actions inside the user's signed-in Chrome (Netflix, WhatsApp, etc.). The old Playwright "Remote mode" has been removed.
+- **Models**:
+    - **Actions**: `gemini-2.5-computer-use-preview-10-2025`.
+    - **Narration**: `gemini-2.5-flash-native-audio-preview-12-2025` (via Gemini Live API).
 
 💡 Key Features & Recent Fixes (CRITICAL)
 
 1. **Live Browser Persistence**
-   - We moved away from Playwright for Live Mode to avoid OS-level file locks on the user's Chrome profile.
+   - Playwright was dropped to avoid OS-level file locks on the user's Chrome profile.
    - The backend now opens a standard Chrome tab with a `udaa_session_id` parameter. The extension auto-connects to the backend via WebSocket.
 
 2. **Keystroke & Action Parsing**
@@ -37,13 +35,12 @@ The system uses a Hybrid architecture to balance user persistence with AI autono
 ⚙️ Environment Configuration
 Ensure `backend/.env` has:
 - `COMPUTER_USE_MODEL=gemini-2.5-computer-use-preview-10-2025`
-- `LIVE_MODEL=gemini-2.0-flash-exp`
+- `LIVE_MODEL=gemini-2.5-flash-native-audio-preview-12-2025`
 - `USE_FIRESTORE=false` (unless you have a Service Account key).
 
 🤝 Collaboration Protocol
-**CRITICAL (Windows)**: Do NOT use `--reload` if you intend to use the Remote Browser (Playwright). It conflicts with the `WindowsProactorEventLoopPolicy`.
-
-- **Start Backend**: `cd backend && .\venv\Scripts\python.exe -m app.main`
+- **Start Backend**: `cd backend && python -m app.main` (inside the venv)
+- **Run Tests**: `cd backend && python -m pytest`
 - **Start Frontend**: `cd frontend && npm run dev`
 - **Extension**: Load the `extension/` folder as an "Unpacked Extension" in Chrome.
 

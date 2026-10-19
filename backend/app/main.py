@@ -1,10 +1,5 @@
 """FastAPI application — main entrypoint."""
 
-import sys
-if sys.platform == "win32":
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 import asyncio
 import json
 import logging
@@ -19,7 +14,7 @@ from google.genai import types
 
 from app.config import get_settings
 from app.websocket import manager as ws_manager
-from app.browser_adapters.base_adapter import BrowserAdapter
+from app.browser.base import BrowserAdapter
 from app.computer_use import run_agent_loop
 from app.live_stream import run_live_stream
 from app.firestore_client import create_session, get_session, list_sessions
@@ -56,7 +51,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Universal Digital Accessibility Agent",
-    description="AI agent that autonomously navigates digital interfaces",
+    description="Assistant that operates websites and apps for people who find them hard to use",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -188,7 +183,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 # Initialize live browser adapter
                 try:
-                    from app.browser_adapters.live_browser_adapter import LiveBrowserAdapter
+                    from app.browser.live_tab import LiveBrowserAdapter
                     browser = LiveBrowserAdapter(session_id)
                     await browser.launch(start_url=start_url)
                 except Exception as launch_err:
@@ -344,13 +339,5 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    import sys
-    import asyncio
-    
-    if sys.platform == "win32":
-        # Force proactor event loop for Playwright before Uvicorn does anything
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        # DO NOT use reload=True on Windows with Playwright, it breaks the subprocess transport
-        uvicorn.run("app.main:app", host="127.0.0.1", port=8080)
-    else:
-        uvicorn.run("app.main:app", host="127.0.0.1", port=8080, reload=True)
+
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8080, reload=True)

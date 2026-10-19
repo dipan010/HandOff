@@ -1,5 +1,7 @@
 # Universal Digital Accessibility Agent — Task Tracker
 
+> Note: the Playwright items below (Phases 2, 9 and 10) were later removed. HandOff now opens a normal Chrome tab and the extension does all browser work.
+
 ## Phase 1: Project Scaffolding
 - [x] Create project directory structure
 - [x] Initialize Next.js frontend (`frontend/`)

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Gemini Models
     COMPUTER_USE_MODEL: str = "gemini-2.5-computer-use-preview-10-2025"
-    LIVE_MODEL: str = "gemini-2.0-flash-exp"
+    LIVE_MODEL: str = "gemini-2.5-flash-native-audio-preview-12-2025"
 
     # Browser / Screen
     SCREEN_WIDTH: int = 1440
