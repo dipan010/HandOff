@@ -46,7 +46,7 @@ async def run_live_stream(
     grandparents_mode: bool = False,
     last_action_time_ref: list | None = None,
     completion_text_ref: list | None = None,
-    live_session_ref: list | None = None,   # ← add
+    live_session_ref: list | None = None,
 ):
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
     prompt_text = NARRATION_PROMPT_GRANDPARENTS if grandparents_mode else NARRATION_PROMPT_DEFAULT
@@ -155,12 +155,12 @@ async def run_live_stream(
                         await asyncio.sleep(3.5)  # let audio generate and queue before stream cancels
                         break                     # exit cleanly — agent is done
 
-                    if not browser.page:
-                        await asyncio.sleep(1)
-                        continue
-
                     try:
                         screenshot_bytes = await browser.capture_screenshot()
+                        if not screenshot_bytes:
+                            # Extension hasn't sent a frame yet.
+                            await asyncio.sleep(1)
+                            continue
 
                         # Fix #3: Only send if screen actually changed
                         current_hash = hashlib.md5(screenshot_bytes).hexdigest()

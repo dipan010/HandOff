@@ -16,6 +16,8 @@ MODULES = [
     "app.computer",
     "app.memory",
     "app.voice",
+    "app.voice.narration",
+    "app.steps.finish",
 ]
 
 
