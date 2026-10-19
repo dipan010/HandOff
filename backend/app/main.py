@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.websocket import manager as ws_manager
 from app.browser.base import BrowserAdapter
 from app.computer_use import run_agent_loop
+from app.steps.run import run_task
 from app.live_stream import run_live_stream
 from app.firestore_client import create_session, get_session, list_sessions
 
@@ -211,8 +212,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 completion_text_ref = [None]
                 live_session_ref = [None]  # holds the live session so agent loop can push into it
 
+                task_runner = run_agent_loop if settings.TASK_FLOW == "classic" else run_task
                 agent_task = asyncio.create_task(
-                    run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                    task_runner(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
                 )
                 
                 # Only start narration stream if enabled

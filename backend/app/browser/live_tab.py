@@ -17,6 +17,9 @@ class LiveBrowserAdapter(BrowserAdapter):
         self._latest_screenshot_bytes: bytes | None = None
         self._latest_screenshot_time: float = 0
         self._action_result_future: asyncio.Future | None = None
+        # The extension's replies carry no request id, so only one action
+        # may be waiting for a reply at a time.
+        self._action_lock = asyncio.Lock()
         self._page = None  # no page object: the extension does the work
 
     @property
@@ -32,33 +35,33 @@ class LiveBrowserAdapter(BrowserAdapter):
         """Launch a new tab in the user's existing default OS browser."""
         import urllib.parse
         import webbrowser
-        
+
         # Determine the base URL
         if not start_url:
             base_url = "https://www.google.com"
         else:
             base_url = start_url
-            
+
         # Parse existing URL to safely append our session query parameter
         parsed_url = urllib.parse.urlparse(base_url)
         query_params = urllib.parse.parse_qs(parsed_url.query)
         query_params['udaa_session_id'] = [self.session_id]
-        
+
         new_query = urllib.parse.urlencode(query_params, doseq=True)
         final_url = parsed_url._replace(query=new_query).geturl()
-        
+
         logger.info(f"Opening native browser tab: {final_url}")
-        
+
         # Opens in a new tab in the user's default active browser
-        # Note: Must be run on the main thread, or since it's an async function, 
+        # Note: Must be run on the main thread, or since it's an async function,
         # using asyncio.to_thread if it blocks, but webbrowser.open is usually non-blocking.
         await asyncio.to_thread(webbrowser.open, final_url, new=2)
-            
+
         logger.info(f"Triggered Live Chrome Native Tab for session {self.session_id}")
 
     async def capture_screenshot(self, min_timestamp: float = 0) -> bytes:
         """Wait for and return the latest screenshot from the extension stream.
-        
+
         If min_timestamp is provided, waits for a frame that arrived AFTER that time.
         """
         import time
@@ -67,12 +70,12 @@ class LiveBrowserAdapter(BrowserAdapter):
             if self._latest_screenshot_bytes and self._latest_screenshot_time >= min_timestamp:
                 return self._latest_screenshot_bytes
             await asyncio.sleep(0.1)
-        
+
         if min_timestamp > 0:
             logger.warning(f"Timeout waiting for FRESH screenshot (min_ts={min_timestamp}) for {self.session_id}. Returning latest.")
         else:
             logger.warning(f"Timeout waiting for ANY screenshot from extension for {self.session_id}")
-            
+
         return getattr(self, "_latest_screenshot_bytes", b"") or b""
 
     def update_screenshot(self, b64_frame: str):
@@ -91,31 +94,32 @@ class LiveBrowserAdapter(BrowserAdapter):
 
     async def execute_action(self, action_name: str, args: dict[str, Any]) -> dict:
         """Send an action to the extension and wait for the result."""
-        from app.websocket import manager as ws_manager
-        
-        # Extension is stateless, we just send standard actions
-        ext_msg = {
-            "type": "execute_action",
-            "action": action_name,
-            **args
-        }
-        
-        self._action_result_future = asyncio.Future()
-        
-        # We need a way to send to the Extension WS.
-        # Assuming the new endpoint registers the extension ws or we broadcast.
-        await ws_manager.send_to_extension(self.session_id, ext_msg)
-        
-        try:
-            # Wait for extension to reply with 'action_result'
-            ext_result = await asyncio.wait_for(self._action_result_future, timeout=10.0)
-            return ext_result
-        except asyncio.TimeoutError:
-            logger.warning(f"Extension action timeout for {action_name}")
-            return {"action": action_name, "success": False, "detail": "Extension timeout"}
-        except Exception as e:
-            logger.error(f"Extension action error: {e}")
-            return {"action": action_name, "success": False, "detail": str(e)}
+        async with self._action_lock:
+            from app.websocket import manager as ws_manager
+
+            # Extension is stateless, we just send standard actions
+            ext_msg = {
+                "type": "execute_action",
+                "action": action_name,
+                **args
+            }
+
+            self._action_result_future = asyncio.Future()
+
+            # We need a way to send to the Extension WS.
+            # Assuming the new endpoint registers the extension ws or we broadcast.
+            await ws_manager.send_to_extension(self.session_id, ext_msg)
+
+            try:
+                # Wait for extension to reply with 'action_result'
+                ext_result = await asyncio.wait_for(self._action_result_future, timeout=10.0)
+                return ext_result
+            except asyncio.TimeoutError:
+                logger.warning(f"Extension action timeout for {action_name}")
+                return {"action": action_name, "success": False, "detail": "Extension timeout"}
+            except Exception as e:
+                logger.error(f"Extension action error: {e}")
+                return {"action": action_name, "success": False, "detail": str(e)}
 
     async def close(self):
         """Cleanup resources."""
@@ -125,6 +129,6 @@ class LiveBrowserAdapter(BrowserAdapter):
             await ws_manager.send_to_extension(self.session_id, {"type": "stop_stream"})
         except Exception:
             pass
-            
+
         self._latest_screenshot_bytes = None
         logger.info(f"LiveBrowserAdapter closed for {self.session_id}")

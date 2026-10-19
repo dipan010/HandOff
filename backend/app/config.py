@@ -22,6 +22,22 @@ class Settings(BaseSettings):
     COMPUTER_USE_MODEL: str = "gemini-2.5-computer-use-preview-10-2025"
     LIVE_MODEL: str = "gemini-2.5-flash-native-audio-preview-12-2025"
 
+    # Models for sorting requests, planning and checking steps.
+    # SORT_MODEL decides if a request is chat or a task, and quick or hard.
+    # Quick tasks are planned with FAST_MODEL, hard ones with STRONG_MODEL.
+    # BACKUP_MODEL is tried once whenever one of those calls fails.
+    SORT_MODEL: str = "gemini-2.5-flash-lite"
+    FAST_MODEL: str = "gemini-2.5-flash"
+    STRONG_MODEL: str = "gemini-2.5-pro"
+    BACKUP_MODEL: str = "gemini-2.5-flash"
+
+    # "steps" = plan, do, check (default). "classic" = the original single loop.
+    TASK_FLOW: str = "steps"
+    MAX_STEP_ACTIONS: int = 10      # actions allowed on one step before re-planning
+    MAX_STEP_RETRIES: int = 3       # failed attempts on one step before re-planning
+    MAX_PLAN_REVISIONS: int = 2     # re-plans allowed per task
+    KEEP_SCREENSHOTS: int = 3       # screenshots kept in the action model's history
+
     # Browser / Screen
     SCREEN_WIDTH: int = 1440
     SCREEN_HEIGHT: int = 900

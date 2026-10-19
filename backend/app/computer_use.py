@@ -21,66 +21,8 @@ from app.voice.narration import narrate_action
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-from app.pause_gate import get_or_create as get_gate
-
-SENSITIVE_DOMAINS = [
-    "accounts.google.com", "login.", "signin.", "auth.",
-    "paypal.com", "pay.", "checkout.", "payment.",
-    "facebook.com/login", "twitter.com/login", "netflix.com/login",
-]
-
-def _is_login_wall(url: str) -> bool:
-    if not url: return False
-    return any(d in url for d in SENSITIVE_DOMAINS)
-
-def _action_to_plain_english(action_name: str, args: dict) -> str:
-    if action_name in ["click_at", "click", "left_click"]:
-        return "Click a button or link"
-    elif action_name in ["type_text_at", "type"]:
-        text = args.get("text", "...")
-        if len(text) > 15:
-            return "Type a message"
-        return f"Type '{text}'"
-    elif action_name == "navigate":
-        return f"Open website: {args.get('url', '...')}"
-    elif action_name in ["scroll", "scroll_document", "scroll_at"]:
-        direction = args.get("direction", "down")
-        amount = args.get("amount", 3)
-        pixels = amount * 120
-        return f"Scroll {direction} {pixels}px"
-    elif action_name == "scroll_to":
-        target_y = args.get("pixel_y", args.get("target_y", 0))
-        return f"Jump to position {target_y}px"
-    elif action_name == "key_combination":
-        keys = args.get("keys", [])
-        return f"Press shortcut: {'+'.join(keys) if isinstance(keys, list) else keys}"
-    elif action_name == "hover_at":
-        return "Point at an element"
-    return "Prepare to take action"
-
-async def _pause_and_wait(
-    session_id: str,
-    reason: str,
-    prompt_text: str,
-    ws_manager,
-    needs_input: bool = False,
-) -> tuple[bool, str | None]:
-    """Pause the agent, surface a prompt to the user, await their response."""
-    gate = get_gate(session_id)
-    gate.event.clear()
-    gate.reason = reason
-
-    # Tell frontend to show the pause prompt
-    await ws_manager.send_pause_prompt(session_id, {
-        "reason": reason,
-        "prompt": prompt_text,
-        "needs_input": needs_input,
-    })
-
-    # Block here — no timeout, agent waits as long as the human needs
-    await gate.event.wait()
-    return gate.approved, gate.user_input
-
+from app.steps.safety import is_login_wall as _is_login_wall, pause_and_wait as _pause_and_wait
+from app.steps.describe import action_in_plain_words as _action_to_plain_english
 
 async def run_agent_loop(
     session_id: str,

@@ -190,5 +190,27 @@ class ConnectionManager:
             }
         })
 
+    async def send_ack(self, session_id: str, text: str):
+        """A short reply straight after a task arrives ("Sure, opening that now")."""
+        await self.send_message(session_id, {"type": "ack", "data": {"text": text}})
+
+    async def send_quick_reply(self, session_id: str, text: str):
+        """An answer that needed no browser work."""
+        await self.send_message(session_id, {"type": "quick_reply", "data": {"text": text}})
+
+    async def send_plan(self, session_id: str, steps: list[dict], revision: int = 0):
+        """The list of steps HandOff will follow (sent again after each re-plan)."""
+        await self.send_message(session_id, {
+            "type": "plan",
+            "data": {"steps": steps, "revision": revision},
+        })
+
+    async def send_step_update(self, session_id: str, number: int, state: str, detail: str = ""):
+        """Progress on one step: state is "working", "done", "retrying" or "failed"."""
+        await self.send_message(session_id, {
+            "type": "step_update",
+            "data": {"number": number, "state": state, "detail": detail},
+        })
+
 # Singleton connection manager
 manager = ConnectionManager()
