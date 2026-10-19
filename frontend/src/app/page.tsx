@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { PlanSteps } from "@/components/PlanSteps";
 import { useSpeech } from "@/hooks/useSpeech";
 import { SafetyConfirmModal } from "@/components/SafetyConfirmModal";
 import { PausePromptModal } from "@/components/PausePromptModal";
@@ -29,6 +30,7 @@ export default function Home() {
     narration,
     safetyRequest,
     pausePrompt,
+    planSteps,
     error,
     startTask,
     sendSafetyResponse,
@@ -332,6 +334,8 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {planSteps.length > 0 && <PlanSteps steps={planSteps} />}
 
             </div>
           </div>
