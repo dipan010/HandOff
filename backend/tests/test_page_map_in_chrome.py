@@ -111,3 +111,31 @@ def test_action_replies(actions):
     assert results["custom"]["success"] is True
     assert results["stale"]["success"] is False and results["stale"]["stale"] is True
     assert results["map"]["success"] is True and results["map"]["page"]["elements"]
+
+
+def run_fixture(name: str) -> dict:
+    dom = subprocess.run(
+        [CHROME, "--headless=new", "--disable-gpu", "--allow-file-access-from-files",
+         "--window-size=1200,800", "--dump-dom", (REPO / "extension" / "tests" / name).as_uri()],
+        capture_output=True, text=True, timeout=60,
+    ).stdout
+    match = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+    assert match and match.group(1), f"{name} did not run"
+    return json.loads(html.unescape(match.group(1)))
+
+
+def test_search_results_skip_ads_and_unwrap_redirects():
+    results = run_fixture("search_fixture.html")["results"]
+    assert [r["url"] for r in results] == [
+        "https://en.m.wikipedia.org/wiki/Alan_Turing",
+        "https://www.britannica.com/biography/Alan-Turing",
+        "https://www.turing.ac.uk/",
+    ]
+    assert results[0]["title"] == "Alan Turing - Wikipedia"
+    assert "English mathematician" in results[0]["snippet"]
+
+
+def test_secret_fields_are_marked(result):
+    found = labels(result)
+    assert found["Password"]["secret"] is True and found["Card"]["secret"] is True
+    assert "secret" not in found["From station"]

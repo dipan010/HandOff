@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # items with ordinary tool calls (any Gemini model). "screenshot": the
     # Computer Use model clicks on screenshots (needs paid quota).
     ACTION_MODE: str = "page"
+    # Where search_web looks when the request doesn't name a site:
+    # "google", "bing" or "duckduckgo".
+    SEARCH_ENGINE: str = "google"
     MAX_STEP_ACTIONS: int = 10      # actions allowed on one step before re-planning
     MAX_STEP_RETRIES: int = 3       # failed attempts on one step before re-planning
     MAX_PLAN_REVISIONS: int = 2     # re-plans allowed per task

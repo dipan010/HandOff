@@ -10,6 +10,8 @@ from typing import Any
 from google.genai import types
 
 from app.browser.base import BrowserAdapter
+from app.browser.page_view import element_by_id
+from app.tools.web_rules import route, search_url
 
 
 @dataclass
@@ -53,6 +55,12 @@ DECLARATIONS = {
                _schema({"direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                         "amount": {"type": "integer", "description": "1 to 10, default 3 (about one screen)"},
                         "element_id": ELEMENT}, ["direction"])),
+    "search_web": ("Find something on the web. Goes straight to a site's own search when the query names one "
+                   "(YouTube, Wikipedia, Amazon...), otherwise searches the web and opens the best result. "
+                   "Use this instead of typing into a search engine yourself. Set open_result to false to just list the results.",
+                   _schema({"query": {"type": "string", "description": "What to look for, in the user's words."},
+                            "site": {"type": "string", "description": "Optional site to search on, e.g. youtube."},
+                            "open_result": {"type": "boolean"}}, ["query"])),
     "open_page": ("Go straight to a web address.",
                   _schema({"url": {"type": "string"}}, ["url"])),
     "go_back": ("Go back to the previous page.", _schema({})),
@@ -73,6 +81,8 @@ DECLARATIONS = {
 }
 
 ALL_TOOLS = list(DECLARATIONS)
+# Tools that only look at the page: they don't use up actions or need to change anything.
+LOOK_ONLY = {"read_page", "look_at_screen", "wait"}
 
 
 def declarations(names: list[str] | None = None) -> list[types.FunctionDeclaration]:
@@ -93,11 +103,58 @@ def _reply_detail(reply, fallback: str) -> str:
     return fallback
 
 
+def _results_text(results: list[dict], start: int = 1) -> str:
+    return "\n".join(f"{i}. {r.get('title', '')} ({r.get('url', '')})" for i, r in enumerate(results, start=start))
+
+
 class BrowserTools:
     """Carries out the model's tool calls through the extension."""
 
-    def __init__(self, browser: BrowserAdapter):
+    def __init__(self, browser: BrowserAdapter, search_engine: str = "google"):
         self.browser = browser
+        self.search_engine = search_engine
+        self.last_page: dict | None = None   # the page map the model is looking at
+
+    def _is_secret(self, element_id) -> bool:
+        el = element_by_id(self.last_page, element_id)
+        return bool(el and el.get("secret"))
+
+    async def open(self, url: str) -> ToolResult:
+        reply = await self.browser.execute_action("navigate", {"url": url})
+        ok = reply is True or (isinstance(reply, dict) and reply.get("success") is not False)
+        return ToolResult(ok, f"Opening {url}." if ok else _reply_detail(reply, f"Could not open {url}."), data=reply)
+
+    async def search_web(self, query: str, site: str = "", open_result: bool = True) -> ToolResult:
+        query = query.strip()
+        if not query:
+            return ToolResult(False, "No search words given.")
+        direct = route(query, site)
+        if direct:
+            opened = await self.open(direct)
+            if opened.ok:
+                opened.message = f"Went straight to {direct}."
+            return opened
+
+        address = search_url(query, self.search_engine)
+        opened = await self.open(address)
+        if not opened.ok:
+            return opened
+        reply = await self.browser.execute_action("search_results", {})
+        results = (reply.get("results") or []) if _reply_ok(reply) else []
+        if not results:
+            return ToolResult(True, f"Searched for \"{query}\". The results are open; pick one from the page view.",
+                              data=opened.data)
+        if not open_result:
+            return ToolResult(True, f"Results for \"{query}\":\n{_results_text(results)}\n"
+                                    "Use open_page with the address of the one you want.", data={"results": results})
+        best = results[0]
+        opened = await self.open(best["url"])
+        if not opened.ok:
+            return ToolResult(False, f"Found results but could not open the first one. Results:\n{_results_text(results)}",
+                              data={"results": results})
+        others = f"\nOther results:\n{_results_text(results[1:5], start=2)}" if len(results) > 1 else ""
+        return ToolResult(True, f"Searched for \"{query}\" and opened the first result: {best['title']} ({best['url']}).{others}",
+                          data={"results": results, "opened": best["url"]})
 
     async def page_map(self) -> dict | None:
         reply = await self.browser.execute_action("page_map", {})
@@ -125,6 +182,9 @@ class BrowserTools:
         if name == "click":
             return await self._do("click_element", {"element_id": el}, f"Clicked {el}.", f"Could not click {el}.")
         if name == "type_text":
+            if self._is_secret(el):
+                return ToolResult(False, "That box is for a password or card number. HandOff never types those; "
+                                         "use ask_before so the user can fill it in.")
             return await self._do(
                 "type_text",
                 {"element_id": el, "text": str(args.get("text", "")), "submit": bool(args.get("submit"))},
@@ -154,9 +214,10 @@ class BrowserTools:
                 url = "https://" + url
             if not url:
                 return ToolResult(False, "No address given.")
-            reply = await self.browser.execute_action("navigate", {"url": url})
-            ok = reply is True or (isinstance(reply, dict) and reply.get("success") is not False)
-            return ToolResult(ok, f"Opening {url}." if ok else _reply_detail(reply, f"Could not open {url}."), data=reply)
+            return await self.open(url)
+        if name == "search_web":
+            return await self.search_web(str(args.get("query", "")), str(args.get("site") or ""),
+                                         args.get("open_result") is not False)
         if name == "go_back":
             return await self._do("go_back", {}, "Went back.", "Could not go back.")
         if name == "click_at":

@@ -561,13 +561,16 @@ const _KEYS = {
 
 async function _runElementAction(action, args) {
     const page = window.handoffPage;
-    if (!page) return action.startsWith("page_") || action === "read_text" ? { success: false, detail: "Page reader not loaded." } : undefined;
+    if (!page) return action.startsWith("page_") || ["read_text", "search_results"].includes(action) ? { success: false, detail: "Page reader not loaded." } : undefined;
 
     if (action === "page_map") {
         return { success: true, page: page.map() };
     }
     if (action === "read_text") {
         return { success: true, ...page.readText(args.max_chars || undefined) };
+    }
+    if (action === "search_results") {
+        return { success: true, ...page.searchResults(args.max || undefined) };
     }
     if (action === "go_back") {
         history.back();

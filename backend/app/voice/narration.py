@@ -5,6 +5,8 @@ import time
 
 from google.genai import types
 
+from app.steps.describe import action_in_plain_words
+
 logger = logging.getLogger(__name__)
 
 _last_narration_inject_time = 0.0
@@ -49,11 +51,16 @@ async def narrate_action(
     elif action_name in ("click_at", "left_click", "click"):
         plain = "clicking on something on the screen"
     else:
-        plain = action_name
+        plain = None
 
     # Normal mode: factual log-style. Grandparents mode: warm first-person.
     # The Live session system prompt shapes Gemini's spoken RESPONSE to this.
-    if grandparents_mode:
+    if plain is None:
+        # Page tools (tools/browser.py) have their own plain wording.
+        described = action_in_plain_words(action_name, action_args)
+        described = described[0].lower() + described[1:]
+        msg = f"Next, I'll {described}." if grandparents_mode else f"Action: {described}"
+    elif grandparents_mode:
         msg = f"I'm now {plain}."
     else:
         msg = f"Action: {plain}"

@@ -181,3 +181,24 @@ def test_old_page_views_are_trimmed():
     trimmed = trim_page_views([view(1), view(2), view(3)], keep=2)
     assert trimmed[0].parts[0].text == "[older page view removed]"
     assert trimmed[2].parts[0].text.endswith("3")
+
+
+async def test_search_landing_on_a_sign_in_page_still_asks_the_user(monkeypatch):
+    asked = []
+
+    async def say_no(session_id, reason, prompt, ui, needs_input=False):
+        asked.append(reason)
+        return False, None
+
+    monkeypatch.setattr("app.steps.safety.pause_and_wait", say_no)
+    sign_in = page("https://accounts.google.com/v3/signin", ("text box", "Email"), ("button", "Next"))
+    browser = FakePageBrowser([page("about:blank"), page("https://www.google.com/search?q=acme+account+login"), sign_in],
+                              results=[{"title": "Acme account", "url": "https://accounts.google.com/v3/signin"}])
+    caller = FakeCaller(actions=[
+        action_reply(call=("search_web", {"query": "acme account login"})),
+        action_reply(call=("type_text", {"element_id": 1, "text": "me@example.com"})),
+    ])
+    ui = await start(caller, browser, task="open my acme account login")
+    assert asked == ["login_wall"]
+    assert [n for n, _ in browser.actions] == ["navigate", "navigate"]   # nothing typed
+    assert sent(ui, "send_task_complete") == []

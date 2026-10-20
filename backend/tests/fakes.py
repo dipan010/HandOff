@@ -163,12 +163,13 @@ class FakePageBrowser(FakeBrowser):
     `replies` lets a test make specific actions fail, e.g. {"click_element": {...}}.
     """
 
-    LOOK_ONLY = {"page_map", "read_text", "get_current_url"}
+    LOOK_ONLY = {"page_map", "read_text", "get_current_url", "search_results"}
 
-    def __init__(self, pages, text="Some page text.", frozen=False, replies=None):
+    def __init__(self, pages, text="Some page text.", frozen=False, replies=None, results=None):
         super().__init__(url=pages[0]["url"], frozen=frozen)
         self.pages = pages
         self.text = text
+        self.results = results or []   # what search_results finds on a results page
         self.replies = replies or {}
         self.index = 0
 
@@ -186,6 +187,8 @@ class FakePageBrowser(FakeBrowser):
             return {"success": True, "text": self.text, "url": self.current["url"]}
         if name == "get_current_url":
             return {"success": True, "url": self.current["url"]}
+        if name == "search_results":
+            return {"success": True, "url": self.current["url"], "results": self.results}
         self.actions.append((name, args))
         if name in self.replies:
             return self.replies[name]

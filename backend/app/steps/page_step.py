@@ -24,7 +24,7 @@ from app.steps.describe import action_in_plain_words
 from app.steps.model_call import ask_with_backup, plain_error
 from app.steps.plan import Step
 from app.steps.safety import pause_and_wait
-from app.tools.browser import BrowserTools, ToolResult, declarations
+from app.tools.browser import LOOK_ONLY, BrowserTools, ToolResult, declarations
 from app.voice.narration import narrate_action
 
 logger = logging.getLogger(__name__)
@@ -41,11 +41,12 @@ PAGE_RULES = (
     "click_at is only for things that have no number.\n"
     "4. Before paying, booking, sending a message, posting, deleting or sharing personal details, use ask_before.\n"
     "5. Keep the user's exact names, places and dates.\n"
-    "6. Use open_page to go to an address directly; don't type addresses into search boxes.\n"
+    "6. To find something, use search_web: it goes to the right site or searches the web and opens the best result. "
+    "Use open_page only for an address you already know. Don't type addresses or searches into a search engine yourself.\n"
     "7. When the current step is finished, call step_done with what shows it.\n"
     "8. When the user's whole task is finished, call task_complete. If they asked a question, the summary must contain the answer.\n"
     "9. If the site clearly shows 'no results', 'sold out' or 'not available', call task_complete and say so.\n"
-    "10. Never type passwords or card numbers. If a page needs them, use ask_before so the user can do it.\n"
+    "10. Never type passwords or card numbers (HandOff refuses boxes marked for them). If a page needs them, use ask_before so the user can do it.\n"
     "11. Search results alone don't finish a task: open the right result and do it there."
 )
 
@@ -121,7 +122,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
     from app.steps.run import StepOutcome  # avoid a circular import
 
     cfg = run.cfg
-    tools = BrowserTools(run.browser)
+    tools = BrowserTools(run.browser, cfg.SEARCH_ENGINE)
     config = types.GenerateContentConfig(
         system_instruction=PAGE_RULES,
         tools=[types.Tool(function_declarations=declarations())],
@@ -150,6 +151,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
         await run.status("thinking", f"Step {step.number}: {step.title}")
 
         page = await tools.page_map()
+        tools.last_page = page
         shot = await run.screenshot()
         if shot:
             await run.show_and_save(shot)
@@ -267,7 +269,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 continue
 
             result: ToolResult
-            if name in ("read_page", "look_at_screen", "wait"):
+            if name in LOOK_ONLY:
                 result = await tools.run(name, args)
                 if name == "wait":
                     await asyncio.sleep(result.data["seconds"])

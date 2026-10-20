@@ -202,6 +202,7 @@
                 label,
                 value: valueOf(el),
                 state: stateOf(el),
+                secret: isSecret(el) || undefined,
                 href: tag === "a" ? clean(el.getAttribute("href"), 100) : undefined,
                 box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
             });
@@ -236,6 +237,89 @@
         return { url: location.href, title: document.title, text };
     }
 
+    // ── Search results ──────────────────────────────────────────────────
+    // Works on Google, Bing and DuckDuckGo alike: a result is a link that
+    // holds a heading, or sits inside one. Ads and the search site's own
+    // links are left out, and redirect links are turned into the real address.
+
+    const AD_MARK = /(^|[\s_-])(ads?|sponsored|b_ad|commercial)([\s_-]|$)/i;
+
+    const SEARCH_SITE = /(^|\.)(google|bing|duckduckgo)\.[a-z.]+$/i;
+
+    function isAd(el) {
+        for (let node = el; node && node !== document.body; node = node.parentElement) {
+            if (node.hasAttribute("data-text-ad") || node.hasAttribute("data-ad")) return true;
+            if (node.id === "tads" || node.id === "bottomads") return true;   // Google's ad blocks
+            const marks = [node.className && String(node.className), node.getAttribute("aria-label"), node.id].join(" ");
+            if (AD_MARK.test(marks)) return true;
+        }
+        return false;
+    }
+
+    function fromBase64(text) {
+        try {
+            const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
+            return atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+        } catch (e) {
+            return "";
+        }
+    }
+
+    // Search sites send clicks through their own address first.
+    function realAddress(href) {
+        let url;
+        try {
+            url = new URL(href, location.href);
+        } catch (e) {
+            return "";
+        }
+        for (const key of ["q", "url", "uddg", "u"]) {
+            let value = url.searchParams.get(key);
+            if (!value) continue;
+            if (key === "u" && value.startsWith("a1")) value = fromBase64(value.slice(2));
+            if (/^https?:\/\//.test(value)) return value;
+        }
+        return url.protocol.startsWith("http") ? url.href : "";
+    }
+
+    function sameSite(a, b) {
+        const root = (host) => host.replace(/^www\./, "").split(".").slice(-2).join(".");
+        try {
+            return root(new URL(a).hostname) === root(new URL(b).hostname);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function snippetOf(link) {
+        // The nearest block around the link that has more text than the title.
+        const title = (link.innerText || link.textContent || "").trim();
+        for (let node = link.parentElement, i = 0; node && i < 5; node = node.parentElement, i++) {
+            const text = clean(node.innerText || node.textContent || "", 400);
+            if (text.length > title.length + 40) return clean(text.replace(title, ""), 200);
+        }
+        return "";
+    }
+
+    function searchResults(max = 8) {
+        const seen = new Set();
+        const results = [];
+        for (const link of document.querySelectorAll("a[href]")) {
+            const heading = link.querySelector("h1, h2, h3") || link.closest("h2, h3");
+            if (!heading || isAd(link)) continue;
+            const rect = link.getBoundingClientRect();
+            if (rect.width < 2 || rect.height < 2) continue;
+            const url = realAddress(link.getAttribute("href"));
+            if (!url || sameSite(url, location.href) || SEARCH_SITE.test(new URL(url).hostname) || seen.has(url)) continue;
+            const title = clean(heading.innerText || heading.textContent || link.textContent, 120);
+            if (!title) continue;
+            seen.add(url);
+            results.push({ title, url, snippet: snippetOf(link) });
+            if (results.length >= max) break;
+        }
+        return { url: location.href, results };
+    }
+
     function element(id) {
         const selector = `[${ID_ATTR}="${Number(id)}"]`;
         const found = document.querySelector(selector);
@@ -248,5 +332,5 @@
         return null;
     }
 
-    window.handoffPage = { map, readText, element, ID_ATTR };
+    window.handoffPage = { map, readText, searchResults, element, ID_ATTR };
 })();
