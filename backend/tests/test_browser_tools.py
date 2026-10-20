@@ -54,3 +54,21 @@ async def test_password_boxes_are_never_typed_into():
     result = await tools.run("type_text", {"element_id": 2, "text": "hunter2"})
     assert not result.ok and "never types" in result.message
     assert browser.actions == []
+
+
+async def test_pull_list_turns_tables_and_lists_into_short_text():
+    found = {"success": True, "tables": [{"caption": "Trains", "header": ["Train", "Fare"],
+                                          "rows": [["Rajdhani", "₹3,200"], ["Poorva", "₹1,450"]], "more": 0}],
+             "lists": [{"items": [{"text": "JBL Go 3 · ₹2,999", "link": "https://shop.example.com/p/2"}], "more": 5}]}
+    browser = FakePageBrowser([BLANK], replies={"pull_items": found})
+    result = await BrowserTools(browser).run("pull_list", {"about": "fares"})
+    assert result.ok and not result.is_action
+    assert result.message.splitlines()[:4] == ["Table 1: Trains", "Train | Fare", "Rajdhani | ₹3,200", "Poorva | ₹1,450"]
+    assert "1. JBL Go 3 · ₹2,999 -> https://shop.example.com/p/2" in result.message
+    assert "(+5 more items further down)" in result.message
+
+
+async def test_pull_list_on_a_page_without_lists():
+    browser = FakePageBrowser([BLANK], replies={"pull_items": {"success": True, "tables": [], "lists": []}})
+    result = await BrowserTools(browser).run("pull_list", {})
+    assert not result.ok and "read_page" in result.message

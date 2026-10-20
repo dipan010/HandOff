@@ -139,3 +139,17 @@ def test_secret_fields_are_marked(result):
     found = labels(result)
     assert found["Password"]["secret"] is True and found["Card"]["secret"] is True
     assert "secret" not in found["From station"]
+
+
+def test_tables_and_repeated_blocks_are_pulled_out():
+    found = run_fixture("list_fixture.html")
+    assert len(found["tables"]) == 1                     # the hidden one is skipped
+    table = found["tables"][0]
+    assert table["caption"] == "Trains from Howrah to Delhi"
+    assert table["header"] == ["Train", "Leaves", "Fare"]
+    assert table["rows"][1] == ["Poorva Express", "08:05", "₹1,450"]
+    items = found["lists"][0]["items"]
+    assert len(items) == 4
+    assert items[1]["text"] == "JBL Go 3 speaker · ₹2,999 · 4.4 stars"
+    assert items[1]["link"] == "https://shop.example.com/p/2"
+    assert not any("Home page link" in i["text"] for lst in found["lists"] for i in lst["items"])   # menus left out

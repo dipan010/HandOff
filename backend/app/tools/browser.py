@@ -66,6 +66,9 @@ DECLARATIONS = {
     "go_back": ("Go back to the previous page.", _schema({})),
     "read_page": ("Read the text of the page (articles, results, prices, answers). Use this to find information.",
                   _schema({})),
+    "pull_list": ("Pull the lists and tables out of the page in one go: prices, products, listings, search hits, timetables. "
+                  "Better than read_page when you need to compare several items.",
+                  _schema({"about": {"type": "string", "description": "Optional: what the list is about, e.g. 'speaker prices'."}})),
     "look_at_screen": ("Get a screenshot of the page next turn. Use only when the page view is missing what you need (pictures, maps, canvas).",
                        _schema({})),
     "click_at": ("Click a point on the screenshot. x and y go from 0 to 1000 across and down the screen. Only for things that have no number in the page view.",
@@ -82,7 +85,7 @@ DECLARATIONS = {
 
 ALL_TOOLS = list(DECLARATIONS)
 # Tools that only look at the page: they don't use up actions or need to change anything.
-LOOK_ONLY = {"read_page", "look_at_screen", "wait"}
+LOOK_ONLY = {"read_page", "pull_list", "look_at_screen", "wait"}
 
 
 def declarations(names: list[str] | None = None) -> list[types.FunctionDeclaration]:
@@ -105,6 +108,29 @@ def _reply_detail(reply, fallback: str) -> str:
 
 def _results_text(results: list[dict], start: int = 1) -> str:
     return "\n".join(f"{i}. {r.get('title', '')} ({r.get('url', '')})" for i, r in enumerate(results, start=start))
+
+
+def items_text(found: dict, max_chars: int = 6000) -> str:
+    """Tables and lists from the extension's pull_items, as short text for the model."""
+    blocks = []
+    for n, table in enumerate(found.get("tables") or [], start=1):
+        lines = [f"Table {n}" + (f": {table['caption']}" if table.get("caption") else "")]
+        if table.get("header"):
+            lines.append(" | ".join(table["header"]))
+        lines.extend(" | ".join(row) for row in table.get("rows") or [])
+        if table.get("more"):
+            lines.append(f"(+{table['more']} more rows)")
+        blocks.append("\n".join(lines))
+    for n, group in enumerate(found.get("lists") or [], start=1):
+        items = group.get("items") or []
+        lines = [f"List {n} ({len(items) + (group.get('more') or 0)} items)"]
+        for i, item in enumerate(items, start=1):
+            lines.append(f"{i}. {item.get('text', '')}" + (f" -> {item['link']}" if item.get("link") else ""))
+        if group.get("more"):
+            lines.append(f"(+{group['more']} more items further down)")
+        blocks.append("\n".join(lines))
+    text = "\n\n".join(blocks)
+    return text if len(text) <= max_chars else text[:max_chars] + "\n…(cut short)"
 
 
 class BrowserTools:
@@ -226,6 +252,12 @@ class BrowserTools:
         if name == "read_page":
             text = await self.page_text()
             return ToolResult(bool(text), text or "The page has no readable text.", is_action=False)
+        if name == "pull_list":
+            reply = await self.browser.execute_action("pull_items", {"about": str(args.get("about") or "")})
+            text = items_text(reply) if _reply_ok(reply) else ""
+            if not text:
+                return ToolResult(False, "No lists or tables found on this page. Try read_page or scroll.", is_action=False)
+            return ToolResult(True, text, is_action=False, data=reply)
         if name == "look_at_screen":
             return ToolResult(True, "A screenshot follows.", is_action=False, wants_screenshot=True)
         if name == "wait":

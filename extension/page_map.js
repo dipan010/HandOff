@@ -320,6 +320,117 @@
         return { url: location.href, results };
     }
 
+    // ── Lists and tables ────────────────────────────────────────────────
+    // Pulls out what a page lists: tables (timetables, prices) and runs of
+    // look-alike blocks (product cards, search hits, listings).
+
+    const MAX_ROWS = 30;
+
+    function hasSize(el) {
+        const r = el.getBoundingClientRect();
+        return r.width > 1 && r.height > 1;
+    }
+
+    function cellText(el, max = 80) {
+        return clean(el.innerText || el.textContent || "", max);
+    }
+
+    function tables() {
+        const out = [];
+        for (const table of document.querySelectorAll("table")) {
+            if (!hasSize(table) || table.closest("[data-handoff-skip]")) continue;
+            const rows = [...table.rows].filter(hasSize);
+            if (rows.length < 2) continue;
+            let header = [];
+            const first = rows[0];
+            if (table.tHead || [...first.cells].every((c) => c.tagName === "TH")) {
+                header = [...first.cells].map((c) => cellText(c, 40));
+                rows.shift();
+            }
+            const body = rows.slice(0, MAX_ROWS).map((r) => [...r.cells].map((c) => cellText(c)));
+            if (!body.length) continue;
+            const caption = table.caption ? cellText(table.caption) : table.getAttribute("aria-label") || "";
+            out.push({ caption, header, rows: body, more: Math.max(0, rows.length - MAX_ROWS) });
+            if (out.length >= 3) break;
+        }
+        return out;
+    }
+
+    // A block's text with its pieces kept apart: "JBL Go 3 · ₹2,999 · 4.4 stars".
+    // Text that the page itself spaces out ("<b>Alan Turing</b> - Wikipedia")
+    // stays one piece.
+    function piecesOf(el, max = 300) {
+        let out = "";
+        let lastRaw = "";
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const raw = node.nodeValue;
+            const text = raw.replace(/\s+/g, " ").trim();
+            const parent = node.parentElement;
+            if (!text || !parent || parent.closest("script, style, noscript") || !hasSize(parent)) continue;
+            if (!out) out = text;
+            else if (/\s$/.test(lastRaw) || /^\s/.test(raw)) out += " " + text;
+            else out += " · " + text;
+            lastRaw = raw;
+        }
+        return clean(out, max);
+    }
+
+    function signature(el) {
+        const cls = (el.classList && el.classList[0] || "").replace(/\d+/g, "");
+        return el.tagName + "." + cls;
+    }
+
+    function wordsOf(text) {
+        return new Set((text || "").toLowerCase().match(/[a-z0-9₹$€£]+/g) || []);
+    }
+
+    function lists(about = "") {
+        const wanted = wordsOf(about);
+        const groups = [];
+        for (const box of document.querySelectorAll("body, body *")) {
+            if (box.children.length < 3 || box.tagName === "TABLE" || box.closest("table, nav, header, footer")) continue;
+            const bySig = new Map();
+            for (const child of box.children) {
+                if (!hasSize(child)) continue;
+                const text = piecesOf(child);
+                if (text.length < 15) continue;
+                const sig = signature(child);
+                if (!bySig.has(sig)) bySig.set(sig, []);
+                bySig.get(sig).push({ child, text });
+            }
+            for (const items of bySig.values()) {
+                if (items.length < 3) continue;
+                const avg = items.reduce((n, i) => n + i.text.length, 0) / items.length;
+                let score = items.length * Math.min(avg, 200);
+                if (wanted.size) {
+                    const all = wordsOf(items.map((i) => i.text).join(" "));
+                    const hits = [...wanted].filter((w) => all.has(w)).length;
+                    score *= 1 + 2 * hits / wanted.size;
+                }
+                groups.push({ box, items, score });
+            }
+        }
+        groups.sort((a, b) => b.score - a.score);
+        const chosen = [];
+        for (const g of groups) {
+            if (chosen.some((c) => c.box.contains(g.box) || g.box.contains(c.box))) continue;
+            chosen.push(g);
+            if (chosen.length >= 2) break;
+        }
+        return chosen.map((g) => ({
+            items: g.items.slice(0, MAX_ROWS).map(({ child, text }) => {
+                const link = child.matches("a[href]") ? child : child.querySelector("a[href]");
+                return { text, link: link ? realAddress(link.getAttribute("href")) || undefined : undefined };
+            }),
+            more: Math.max(0, g.items.length - MAX_ROWS),
+        }));
+    }
+
+    function pullItems(about = "") {
+        return { url: location.href, tables: tables(), lists: lists(about) };
+    }
+
     function element(id) {
         const selector = `[${ID_ATTR}="${Number(id)}"]`;
         const found = document.querySelector(selector);
@@ -332,5 +443,5 @@
         return null;
     }
 
-    window.handoffPage = { map, readText, searchResults, element, ID_ATTR };
+    window.handoffPage = { map, readText, searchResults, pullItems, element, ID_ATTR };
 })();
