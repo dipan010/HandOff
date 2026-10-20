@@ -24,7 +24,7 @@ from app.steps.describe import action_in_plain_words
 from app.steps.model_call import ask_with_backup, plain_error
 from app.steps.plan import Step
 from app.steps.safety import pause_and_wait
-from app.tools.browser import LOOK_ONLY, BrowserTools, ToolResult, declarations
+from app.tools.browser import ALL_TOOLS, LOOK_ONLY, BrowserTools, ToolResult, declarations, tools_for_step
 from app.voice.narration import narrate_action
 
 logger = logging.getLogger(__name__)
@@ -37,12 +37,12 @@ PAGE_RULES = (
     "RULES:\n"
     "1. Only use numbers that are in the latest page view. Numbers can change after the page changes.\n"
     "2. If what you need isn't listed, scroll, or use read_page to read the page's text. "
-    "To compare prices, products, listings or times, use pull_list.\n"
+    "To compare prices, products, listings or times, use pull_list if it is offered.\n"
     "3. Use look_at_screen only when the page view can't show it (pictures, maps, charts). "
     "click_at is only for things that have no number.\n"
     "4. Before paying, booking, sending a message, posting, deleting or sharing personal details, use ask_before.\n"
-    "5. Keep the user's exact names, places and dates. To fill two or more boxes of a form, use fill_form.\n"
-    "6. To find something, use search_web: it goes to the right site or searches the web and opens the best result. "
+    "5. Keep the user's exact names, places and dates. To fill two or more boxes of a form, use fill_form if it is offered.\n"
+    "6. To find something, use search_web if it is offered: it goes to the right site or searches the web and opens the best result. "
     "Use open_page only for an address you already know. Don't type addresses or searches into a search engine yourself.\n"
     "7. When the current step is finished, call step_done with what shows it.\n"
     "8. When the user's whole task is finished, call task_complete. If they asked a question, the summary must contain the answer.\n"
@@ -124,12 +124,17 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
 
     cfg = run.cfg
     tools = BrowserTools(run.browser, cfg.SEARCH_ENGINE)
-    config = types.GenerateContentConfig(
-        system_instruction=PAGE_RULES,
-        tools=[types.Tool(function_declarations=declarations())],
-        tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="ANY")),
-        temperature=0.2,
-    )
+    def config_with(names: list[str]) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            system_instruction=PAGE_RULES,
+            tools=[types.Tool(function_declarations=declarations(names))],
+            tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="ANY")),
+            temperature=0.2,
+        )
+
+    # Start with the tools that fit this step; once a try fails, offer them all.
+    config = config_with(tools_for_step(f"{step.title} {step.done_when}"))
+    all_offered = False
     contents: list = [types.Content(role="user", parts=[types.Part(text=opening_text(run, step, plan))])]
     pending: list[types.Part] = []           # tool answers to send with the next page view
     failures, step_actions, unreadable = 0, 0, 0
@@ -187,6 +192,9 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
         pending = []
         contents.append(types.Content(role="user", parts=parts))
         contents = trim_images(trim_page_views(contents), cfg.KEEP_SCREENSHOTS)
+
+        if failures and not all_offered:
+            config, all_offered = config_with(ALL_TOOLS), True
 
         try:
             response = await ask_with_backup(run.caller, run.action_model, cfg.BACKUP_MODEL, contents, config)

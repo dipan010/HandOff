@@ -4,6 +4,7 @@ Every tool works on the element numbers from the page map, except `click_at`,
 which is the screenshot fallback for things the page map can't see.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -90,6 +91,23 @@ DECLARATIONS = {
 }
 
 ALL_TOOLS = list(DECLARATIONS)
+# The bigger tools are offered only on steps that sound like they need them,
+# so the model has fewer tools to choose from. Every other tool is always offered.
+EXTRA_TOOLS = {
+    "search_web": re.compile(r"\b(search|find|look (up|for)|go to|open|visit|watch|play|listen|news|weather|"
+                             r"youtube|wikipedia|amazon|flipkart|website|site)\b", re.I),
+    "pull_list": re.compile(r"\b(prices?|cheap(er|est)?|compare|list|options|results|times?|timetable|table|ratings?|"
+                            r"reviews?|best|top|fares?|flights?|trains?|hotels?|products?|items)\b", re.I),
+    "fill_form": re.compile(r"\b(fill|enter|form|details|dates?|book|booking|sign up|register|address|passengers?|"
+                            r"travell?ers?|checkout|apply)\b", re.I),
+}
+
+
+def tools_for_step(text: str) -> list[str]:
+    """The tools to offer for a step, picked from its wording."""
+    return [name for name in ALL_TOOLS if name not in EXTRA_TOOLS or EXTRA_TOOLS[name].search(text or "")]
+
+
 # Tools that only look at the page: they don't use up actions or need to change anything.
 LOOK_ONLY = {"read_page", "pull_list", "look_at_screen", "wait"}
 

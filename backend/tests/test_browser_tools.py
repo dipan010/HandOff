@@ -109,3 +109,14 @@ async def test_fill_form_with_nothing_matching_fails():
     browser = FakePageBrowser([FORM], frozen=True)
     result = await BrowserTools(browser).run("fill_form", {"fields": [{"label": "Coach number", "value": "B2"}]})
     assert not result.ok and browser.actions == []
+
+
+def test_each_step_is_offered_the_tools_that_fit_it():
+    from app.tools.browser import ALL_TOOLS, tools_for_step
+    reading = tools_for_step("Read the Founders section of the article. The founders' names are visible")
+    assert {"search_web", "pull_list", "fill_form"}.isdisjoint(reading)
+    assert {"click", "type_text", "read_page", "click_at", "ask_before", "task_complete"} <= set(reading)
+    assert "search_web" in tools_for_step("Search YouTube for lofi hip hop")
+    assert "pull_list" in tools_for_step("Find the cheapest flight in the results")
+    assert "fill_form" in tools_for_step("Enter the travel dates and passenger details")
+    assert len(reading) < len(ALL_TOOLS)

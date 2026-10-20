@@ -202,3 +202,25 @@ async def test_search_landing_on_a_sign_in_page_still_asks_the_user(monkeypatch)
     assert asked == ["login_wall"]
     assert [n for n, _ in browser.actions] == ["navigate", "navigate"]   # nothing typed
     assert sent(ui, "send_task_complete") == []
+
+
+async def test_tools_offered_follow_the_step_and_widen_after_a_failure():
+    offered = []
+    wiki = page("https://en.wikipedia.org/wiki/Alan_Turing", ("link", "Early life"), ("link", "Career"), ("link", "Legacy"))
+    browser = FakePageBrowser([wiki], frozen=True)
+    caller = FakeCaller(
+        plan=[{"steps": [{"title": "Read the Early life section", "done_when": "The section text is visible"}]}],
+        actions=[action_reply(call=("click", {"element_id": 1})),
+                 action_reply(call=("task_complete", {"summary": "He was born in London."}))],
+    )
+    original = caller.ask
+
+    async def spy(model, contents, config=None):
+        if config is not None and getattr(config, "tools", None):
+            offered.append({d.name for d in config.tools[0].function_declarations})
+        return await original(model, contents, config)
+
+    caller.ask = spy
+    await start(caller, browser, task="where was Alan Turing born? read his early life")
+    assert "search_web" not in offered[0] and "fill_form" not in offered[0]
+    assert "search_web" in offered[1]          # the click changed nothing, so every tool is offered
