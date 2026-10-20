@@ -199,3 +199,23 @@ async def test_last_step_is_told_to_answer():
     last_step_prompts = [t for t in seen if "Work on step 2" in t]
     assert first_step_prompts and "LAST step" not in first_step_prompts[0]
     assert last_step_prompts and "LAST step" in last_step_prompts[0]
+
+
+async def test_sign_in_page_asks_once_then_carries_on(monkeypatch):
+    asked = []
+
+    async def fake_pause(session_id, reason, prompt, ui, needs_input=False):
+        asked.append(reason)
+        return True, None
+
+    monkeypatch.setattr("app.steps.safety.pause_and_wait", fake_pause)
+    caller = FakeCaller(actions=[
+        action_reply(call=("click_at", {"x": 1, "y": 1})),
+        action_reply(call=("click_at", {"x": 1, "y": 1})),
+        action_reply("TASK COMPLETE: signed in and done"),
+    ])
+    browser = FakeBrowser(url="https://www.netflix.com/login")
+    ui, _ = await start(caller, browser=browser)
+    assert asked == ["login_wall"]
+    assert len(browser.actions) == 1          # first click skipped while the user signed in
+    assert sent(ui, "send_task_complete") == [("signed in and done",)]

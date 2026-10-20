@@ -16,6 +16,7 @@ class LiveBrowserAdapter(BrowserAdapter):
         self.session_id = session_id
         self._latest_screenshot_bytes: bytes | None = None
         self._latest_screenshot_time: float = 0
+        self._latest_url: str = ""
         self._action_result_future: asyncio.Future | None = None
         # The extension's replies carry no request id, so only one action
         # may be waiting for a reply at a time.
@@ -28,7 +29,9 @@ class LiveBrowserAdapter(BrowserAdapter):
 
     async def get_current_url(self) -> str:
         res = await self.execute_action("get_current_url", {})
-        return res.get("url", "")
+        url = res.get("url") if isinstance(res, dict) else None
+        # Fall back to the address sent with the latest screen frame.
+        return url if isinstance(url, str) and url else self._latest_url
 
 
     async def launch(self, start_url: str = ""):
@@ -78,9 +81,11 @@ class LiveBrowserAdapter(BrowserAdapter):
 
         return getattr(self, "_latest_screenshot_bytes", b"") or b""
 
-    def update_screenshot(self, b64_frame: str):
+    def update_screenshot(self, b64_frame: str, url: str | None = None):
         """Called by the websocket handler when a new frame arrives."""
         import time
+        if url and url != "unknown":
+            self._latest_url = url
         try:
             self._latest_screenshot_bytes = base64.b64decode(b64_frame)
             self._latest_screenshot_time = time.time()

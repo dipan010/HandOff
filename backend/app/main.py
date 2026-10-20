@@ -342,7 +342,7 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
                 if session and "browser" in session:
                     adapter = session["browser"]
                     if hasattr(adapter, "update_screenshot"):
-                        adapter.update_screenshot(b64_image)
+                        adapter.update_screenshot(b64_image, message.get("url"))
 
             elif msg_type == "action_result":
                 session = active_sessions.get(session_id)

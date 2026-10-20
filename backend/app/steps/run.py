@@ -31,7 +31,7 @@ from app.steps.describe import action_in_plain_words
 from app.steps.finish import finish_task
 from app.steps.model_call import Caller, GeminiCaller, plain_error
 from app.steps.plan import Step, make_plan, revise_plan
-from app.steps.safety import is_login_wall, pause_and_wait
+from app.steps.safety import SignInGuard, pause_and_wait
 from app.steps.sort import sort_request
 from app.storage import upload_screenshot
 from app.voice.narration import narrate_action
@@ -148,6 +148,11 @@ class TaskRun:
     history: list[str] = field(default_factory=list)
     last_action_finish: float = 0.0
     next_screenshot: bytes | None = None
+    sign_in_guard: SignInGuard | None = None
+
+    def __post_init__(self):
+        if self.sign_in_guard is None:
+            self.sign_in_guard = SignInGuard(self.session_id, self.ui)
 
     # ── small helpers ────────────────────────────────────────────────────
 
@@ -313,7 +318,11 @@ class TaskRun:
             outcome, results, names = await self.act(calls)
             if outcome is not None:
                 return outcome
-            step_actions += max(1, len(names))
+            if not names:
+                # Nothing was carried out (e.g. the user just signed in): look again.
+                last_signature = None
+                continue
+            step_actions += len(names)
 
             await asyncio.sleep(self.timing.after_page_load)
             self.last_action_finish = time.time()
@@ -362,17 +371,12 @@ class TaskRun:
                     return StepOutcome("stopped"), results, names
                 continue
 
-            if is_login_wall(await self.url()):
-                approved, _ = await pause_and_wait(
-                    self.session_id, "login_wall",
-                    "The page is asking you to sign in. Please sign in, then click Continue.",
-                    self.ui,
-                )
-                if not approved:
-                    await self.status("cancelled", "Stopped at the sign-in page.")
-                    return StepOutcome("stopped"), results, names
-                await asyncio.sleep(1)
-                continue
+            sign_in = await self.sign_in_guard.check(await self.url())
+            if sign_in == "stopped":
+                await self.status("cancelled", "Stopped at the sign-in page.")
+                return StepOutcome("stopped"), results, names
+            if sign_in == "resumed":
+                break  # the page changed while the user signed in; look again first
 
             if self.actions_used >= self.cfg.MAX_AGENT_TURNS:
                 return StepOutcome("out_of_actions"), results, names

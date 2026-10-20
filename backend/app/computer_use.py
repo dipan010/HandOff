@@ -21,7 +21,7 @@ from app.voice.narration import narrate_action
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-from app.steps.safety import is_login_wall as _is_login_wall, pause_and_wait as _pause_and_wait
+from app.steps.safety import SignInGuard, pause_and_wait as _pause_and_wait
 from app.steps.describe import action_in_plain_words as _action_to_plain_english
 
 async def run_agent_loop(
@@ -46,6 +46,7 @@ async def run_agent_loop(
     7. Repeat until task complete or max turns reached
     """
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+    sign_in_guard = SignInGuard(session_id, ws_manager)
     
     post_action_sleep = 2.0 if patience_mode else 0.5
     post_nav_sleep = 4.0 if patience_mode else 1.0
@@ -296,22 +297,13 @@ async def run_agent_loop(
                     return
                 continue  # re-enter loop, Gemini will proceed
             
-            # Auto-detect login walls from current URL
-            current_url = await browser.get_current_url()
-            if _is_login_wall(current_url):
-                approved, typed_text = await _pause_and_wait(
-                    session_id,
-                    reason='login_wall',
-                    prompt_text='The page is asking you to log in. Please sign in, then click Continue.',
-                    ws_manager=ws_manager,
-                    needs_input=False,
-                )
-                if not approved:
-                    await ws_manager.send_status(session_id, 'cancelled', 'User cancelled at login wall.', grandparents_mode)
-                    return
-                # After user signals ready, take a fresh screenshot and continue
-                await asyncio.sleep(1)
-                continue
+            # Sign-in and payment pages: ask the user once per page, then carry on.
+            sign_in = await sign_in_guard.check(await browser.get_current_url())
+            if sign_in == "stopped":
+                await ws_manager.send_status(session_id, 'cancelled', 'User cancelled at login wall.', grandparents_mode)
+                return
+            if sign_in == "resumed":
+                break  # page changed while the user signed in; take a fresh screenshot
 
             plain_action = _action_to_plain_english(action_name, action_args)
             logger.info(f"Action: {action_name}({action_args}) -> {plain_action}")

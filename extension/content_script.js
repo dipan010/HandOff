@@ -746,18 +746,24 @@ window.udaa = {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "EXECUTE_ACTION") {
         (async () => {
-            let success = false;
+            let result = false;
             try {
-                success = await executeAction(
+                result = await executeAction(
                     request.payload.action,
                     request.payload.args
                 );
             } catch (e) {
                 console.error("UDAA execution error:", e);
-                sendResponse({ success: false, detail: e.toString() });
+                sendResponse({ success: false, action: request.payload.action, detail: e.toString() });
                 return;
             }
-            sendResponse({ success, action: request.payload.action });
+            // Actions return either true/false or an object with data (url, page map, text...).
+            // Objects are spread into the reply so the backend can read e.g. result.url.
+            if (result && typeof result === "object") {
+                sendResponse({ success: result.success !== false, ...result, action: request.payload.action });
+            } else {
+                sendResponse({ success: !!result, action: request.payload.action });
+            }
         })();
         return true;  // CRITICAL: keeps message channel open for async response
     } else if (request.type === "UDAA_STATUS") {
