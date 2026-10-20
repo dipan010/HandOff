@@ -103,6 +103,7 @@ def test_actions_by_element_number_change_the_page(actions):
     assert state["clicked"] == "yes"
     assert state["city"] == "Pune"
     assert state["from"] == "Kolkata, India"     # typed, then picked the suggestion
+    assert state["userInputReports"] == 0         # HandOff's own clicks never count as the user
 
 
 def test_action_replies(actions):

@@ -22,6 +22,8 @@ class LiveBrowserAdapter(BrowserAdapter):
         # may be waiting for a reply at a time.
         self._action_lock = asyncio.Lock()
         self._page = None  # no page object: the extension does the work
+        # Set when the extension sees the user click or type in the work tab.
+        self.user_input_seen = False
 
     @property
     def page(self):

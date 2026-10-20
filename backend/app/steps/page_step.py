@@ -98,6 +98,12 @@ def trim_images(contents: list, keep: int) -> list:
     return list(reversed(out))
 
 
+def _forget_user_input(run) -> None:
+    """After HandOff's own pauses the user was meant to use the page; that isn't a takeover."""
+    if getattr(run.browser, "user_input_seen", False):
+        run.browser.user_input_seen = False
+
+
 def _response(name: str, ok: bool, message: str) -> types.Part:
     return types.Part.from_function_response(name=name, response={"ok": ok, "result": message})
 
@@ -154,6 +160,18 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             return StepOutcome("stuck", last_failure or "This step kept failing.")
         if step_actions >= cfg.MAX_STEP_ACTIONS:
             return StepOutcome("stuck", f"Used {step_actions} actions on this step without finishing it.")
+
+        # The user clicked or typed in HandOff's tab: don't act on top of them.
+        if getattr(run.browser, "user_input_seen", False):
+            run.browser.user_input_seen = False
+            approved, _ = await pause_and_wait(
+                run.session_id, "user_input",
+                "You're using the page, so HandOff has paused. Continue when you're done?", run.ui)
+            if not approved:
+                await run.status("cancelled", "Stopped, so you can carry on yourself.")
+                return StepOutcome("stopped")
+            before = None                        # the user changed the page, not HandOff
+            pending.append(types.Part(text="The user used the page while HandOff was paused. Look at it again."))
 
         await run.status("thinking", f"Step {step.number}: {step.title}")
 
@@ -236,6 +254,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             if name == "ask_before":
                 question = str(args.get("question") or "HandOff wants to do something sensitive. Go ahead?")
                 approved, _ = await pause_and_wait(run.session_id, "confirmation", question, run.ui)
+                _forget_user_input(run)
                 if not approved:
                     pending.append(_response(name, False, "The user said no."))
                     await run.status("cancelled", "You said no, so I stopped.")
@@ -303,8 +322,18 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 pending.append(_response(name, result.ok, message))
                 continue
 
+            # The user started using the page during this turn: stop here and
+            # ask at the top of the next turn.
+            if getattr(run.browser, "user_input_seen", False):
+                pending.append(_response(name, False, "Not done: the user is using the page."))
+                for later in calls[index + 1:]:
+                    pending.append(_response(later.name, False, "Not done: the user is using the page."))
+                break
+
             # A real action: check sign-in pages and budgets first.
             sign_in = await run.sign_in_guard.check(url)
+            if sign_in != "clear":
+                _forget_user_input(run)
             if sign_in == "stopped":
                 await run.status("cancelled", "Stopped at the sign-in page.")
                 pending.append(_response(name, False, "The user stopped at the sign-in page."))
@@ -327,6 +356,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             if risky and not said_yes:
                 question = f"HandOff is about to {risky}. Go ahead?"
                 approved, _ = await pause_and_wait(run.session_id, "confirmation", question, run.ui)
+                _forget_user_input(run)
                 if not approved:
                     pending.append(_response(name, False, "The user said no."))
                     await run.status("cancelled", "You said no, so I stopped.")

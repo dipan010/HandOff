@@ -387,6 +387,12 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
                     if hasattr(adapter, "update_screenshot"):
                         adapter.update_screenshot(b64_image, message.get("url"))
 
+            elif msg_type == "user_input":
+                # The user clicked or typed in HandOff's tab during a task.
+                session = active_sessions.get(session_id)
+                if session and session.get("browser") is not None:
+                    session["browser"].user_input_seen = True
+
             elif msg_type == "action_result":
                 session = active_sessions.get(session_id)
                 if session and "browser" in session:

@@ -15,7 +15,11 @@
   <pre id="out"></pre>
   <script>
     // Stand-in for the extension API so content_script.js can load in a normal page.
-    window.chrome = { runtime: { onMessage: { addListener() {} }, sendMessage() {} } };
+    window.sentToExtension = [];
+    window.chrome = { runtime: {
+      onMessage: { addListener(fn) { window.pageListener = fn; } },
+      sendMessage(msg) { window.sentToExtension.push(msg); },
+    } };
   </script>
   <script>
     // A picker that only lists matching cities after you type, like MakeMyTrip's.
@@ -37,6 +41,8 @@
   <script src="../content_script.js"></script>
   <script>
     (async () => {
+      // A task is running: HandOff's own clicks below must not count as the user.
+      window.pageListener({ type: "UDAA_STATUS", payload: { status: "executing", message: "Working" } }, {}, () => {});
       const ids = {};
       for (const e of window.handoffPage.map().elements) ids[e.label] = e.id;
       const run = window.udaa.runAction;
@@ -58,6 +64,7 @@
         clicked: document.getElementById("go").dataset.clicked || "no",
         city: document.getElementById("city").textContent,
         from: document.getElementById("from").dataset.picked || "",
+        userInputReports: window.sentToExtension.filter((m) => m.type === "USER_INPUT").length,
       };
       document.getElementById("out").textContent = JSON.stringify({ results, state });
     })();

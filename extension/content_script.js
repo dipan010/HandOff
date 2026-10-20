@@ -685,6 +685,31 @@ async function _runElementAction(action, args) {
 
 
 
+// ── Noticing the user ──────────────────────────────────────────────────────
+// While a task runs, a real click or key press in this tab means the user is
+// using the page, so HandOff should pause. HandOff's own clicks and keys are
+// made by this script, which the browser marks as not trusted.
+// (If real input via chrome.debugger is added later, it will be trusted too
+// and must be told apart from the user's.)
+const BUSY_STATUSES = new Set(["started", "thinking", "waiting", "executing", "navigating"]);
+let _taskBusy = false;
+let _lastUserReport = 0;
+
+function _noticeUser(event) {
+    if (!event.isTrusted || !_taskBusy) return;
+    if (event.target && event.target.closest && event.target.closest("#udaa-status-banner")) return;
+    const now = Date.now();
+    if (now - _lastUserReport < 2000) return;
+    _lastUserReport = now;
+    try {
+        chrome.runtime.sendMessage({ type: "USER_INPUT", kind: event.type });
+    } catch (e) {
+        // extension reloaded; nothing to tell
+    }
+}
+document.addEventListener("mousedown", _noticeUser, true);
+document.addEventListener("keydown", _noticeUser, true);
+
 window.udaa = {
     // Lets a test page (or DevTools) run an action the way the backend would.
     runAction: (action, args = {}) => executeAction(action, { action, ...args }),
@@ -950,6 +975,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } else if (request.type === "UDAA_STATUS") {
         if (request.payload) {
             const status = request.payload.status;
+            _taskBusy = BUSY_STATUSES.has(status);
             const isGP = request.payload.grandparents_mode;
             let msg = request.payload.message ? `UDAA: ${request.payload.message}` : status.toUpperCase();
 

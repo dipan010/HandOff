@@ -224,6 +224,14 @@ function sessionIdFromUrl(url) {
 }
 
 chrome.runtime.onMessage.addListener((request, sender) => {
+    if (request.type === "USER_INPUT") {
+        // Only the user's own use of HandOff's tab matters, not other tabs.
+        const tabId = sender && sender.tab ? sender.tab.id : null;
+        if (tabId != null && tabId === workTabId && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "user_input", kind: request.kind }));
+        }
+        return;
+    }
     if (request.type === "CONNECT_WS") {
         const tabId = sender && sender.tab ? sender.tab.id : null;
         console.log("HandOff: page asked to connect session", request.sessionId, "from tab", tabId);
