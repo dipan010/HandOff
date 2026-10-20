@@ -224,3 +224,45 @@ async def test_tools_offered_follow_the_step_and_widen_after_a_failure():
     await start(caller, browser, task="where was Alan Turing born? read his early life")
     assert "search_web" not in offered[0] and "fill_form" not in offered[0]
     assert "search_web" in offered[1]          # the click changed nothing, so every tool is offered
+
+
+async def test_youtube_steps_are_checked_in_code_without_the_check_model():
+    browser = FakePageBrowser([SEARCH_PAGE, RESULTS_PAGE, PLAYING_PAGE])
+    browser.pages[1] = dict(RESULTS_PAGE, url="https://www.youtube.com/results?search_query=lofi+hip+hop")
+    caller = FakeCaller(
+        plan=[{"steps": [
+            {"title": "Search YouTube for 'lofi hip hop'", "done_when": "YouTube search results for 'lofi hip hop' are shown"},
+            {"title": "Click a lofi video to play it", "done_when": "A lofi video is playing"},
+        ]}],
+        actions=[
+            action_reply(call=("type_text", {"element_id": 1, "text": "lofi hip hop", "submit": True})),
+            action_reply(call=("step_done", {"evidence": "Results are shown"})),
+            action_reply(call=("click", {"element_id": 1})),
+            action_reply(call=("task_complete", {"summary": "The lofi stream is playing."})),
+        ],
+    )
+    ui = await start(caller, browser)
+    assert sent(ui, "send_task_complete") == [("The lofi stream is playing.",)]
+    assert caller.count("check") == 0
+
+
+async def test_done_in_the_same_turn_as_an_action_is_checked_on_the_new_page():
+    """H4: the check must see the page after the click, not before it."""
+    seen = []
+    form = page("https://example.com/form", ("button", "Continue"))
+    after = page("https://example.com/thanks", ("link", "Home"))
+    browser = FakePageBrowser([form, after])
+    caller = FakeCaller(actions=[calls_reply(("click", {"element_id": 1}), ("task_complete", {"summary": "Done."}))])
+    original = caller.ask
+
+    async def spy(model, contents, config=None):
+        from tests.fakes import _prompt_text
+        text = _prompt_text(contents)
+        if "You check the work" in text:
+            seen.append(text)
+        return await original(model, contents, config)
+
+    caller.ask = spy
+    await start(caller, browser, task="continue the form")
+    assert seen and "https://example.com/thanks" in seen[0]
+    assert "[1] link \"Home\"" in seen[0]

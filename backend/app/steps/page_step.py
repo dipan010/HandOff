@@ -19,7 +19,7 @@ from google.genai import types
 from app.action_log import log_action
 from app.browser.page_view import PAGE_VIEW_HEADER, page_view_text, structure_hash
 from app.firestore_client import update_session_state
-from app.steps.check import ScreenState, changed, is_step_done
+from app.steps.check import ScreenState, changed, is_step_done, quick_check
 from app.steps.describe import action_in_plain_words
 from app.steps.model_call import ask_with_backup, plain_error
 from app.steps.plan import Step
@@ -251,14 +251,27 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                     outcome = StepOutcome("task_done", summary)
                     pending.append(_response(name, True, "Thanks."))
                     continue
-                page_text = page_view_text(page)
+                # Check against the page as it is now: actions earlier in this
+                # turn may have changed it since the page view was taken.
+                check_page, check_shot, check_url = page, (shot if add_shot or page is None else None), url
+                if names:
+                    await asyncio.sleep(run.timing.after_page_load)
+                    check_page = await tools.page_map() or page
+                    check_url = (check_page or {}).get("url") or await run.url() or url
+                    if check_shot is not None or check_page is None:
+                        check_shot = await run.screenshot()
                 read = await tools.page_text(4000)
-                if read:
-                    page_text += "\nPage text:\n" + read
-                check = await is_step_done(
-                    run.task, step, shot if add_shot or page is None else None, url,
-                    run.caller, cfg.CHECK_MODEL, cfg.BACKUP_MODEL, page_text=page_text,
-                )
+                check = quick_check(step, check_url, check_page, read, summary, ends_task=(name == "task_complete"))
+                if check is None:
+                    page_text = page_view_text(check_page)
+                    if read:
+                        page_text += "\nPage text:\n" + read
+                    check = await is_step_done(
+                        run.task, step, check_shot, check_url,
+                        run.caller, cfg.CHECK_MODEL, cfg.BACKUP_MODEL, page_text=page_text,
+                    )
+                else:
+                    logger.info(f"Step {step.number} checked in code: {check.reason}")
                 if not check.ok:
                     failures += 1
                     last_failure = check.reason
