@@ -1,8 +1,9 @@
 """Stopping to ask the user before sign-ins, payments and other sensitive steps."""
 
-from app.pause_gate import get_or_create as get_gate
-
+import re
 from urllib.parse import urlparse
+
+from app.pause_gate import get_or_create as get_gate
 
 # Whole sites where every page is about signing in or paying.
 SENSITIVE_HOSTS = {"accounts.google.com", "login.microsoftonline.com", "appleid.apple.com", "paypal.com", "www.paypal.com"}
@@ -30,6 +31,56 @@ def is_login_wall(url: str) -> bool:
         return True
     return any(path == part or path.startswith(part + "/") or path.startswith(part + "?") or path.startswith(part + ".")
                for part in SENSITIVE_PATH_PARTS)
+
+
+# Buttons whose click can't be taken back: sending, paying, booking, posting, deleting.
+RISKY_LABEL = re.compile(
+    r"\b(send|pay|payment|place (your )?order|buy( it)? now|purchase|checkout and pay|book( now)?|"
+    r"confirm (and pay|booking|order|payment|purchase)|reserve|post|publish|tweet|delete|"
+    r"remove permanently|transfer|donate)\b",
+    re.I,
+)
+# Boxes where Enter sends what was typed.
+MESSAGE_BOX = re.compile(r"\b(message|comment|reply|tweet|post|chat|write something|what's on your mind)\b", re.I)
+CLICK_ROLES = {"button", "clickable", "menuitem", "link", "tab", "option"}
+
+
+def _element(page: dict | None, element_id) -> dict | None:
+    for el in (page or {}).get("elements") or []:
+        if str(el.get("id")) == str(element_id):
+            return el
+    return None
+
+
+def _is_navigation_link(el: dict) -> bool:
+    href = (el.get("href") or "").strip().lower()
+    return el.get("role") == "link" and bool(href) and not href.startswith(("#", "javascript"))
+
+
+def risky_target(name: str, args: dict, page: dict | None) -> str | None:
+    """What a click or Enter would send, pay, book, post or delete, if anything.
+
+    Returns words for the question to the user, or None when the action is
+    ordinary. Plain code, so it holds even if the model forgets to ask.
+    """
+    if name == "click":
+        el = _element(page, args.get("element_id"))
+        if not el or el.get("role") not in CLICK_ROLES or _is_navigation_link(el):
+            return None
+        label = el.get("label") or ""
+        return f'click "{label}"' if RISKY_LABEL.search(label) else None
+    if name in ("type_text", "press_key"):
+        if name == "type_text":
+            if not args.get("submit"):
+                return None
+            el = _element(page, args.get("element_id"))
+        else:
+            if str(args.get("key", "")).strip().lower() != "enter":
+                return None
+            el = next((e for e in (page or {}).get("elements") or [] if "focused" in (e.get("state") or [])), None)
+        label = (el or {}).get("label") or ""
+        return f'send what is typed in "{label}"' if MESSAGE_BOX.search(label) else None
+    return None
 
 
 def page_key(url: str) -> str:

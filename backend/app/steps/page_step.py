@@ -23,7 +23,7 @@ from app.steps.check import ScreenState, changed, is_step_done
 from app.steps.describe import action_in_plain_words
 from app.steps.model_call import ask_with_backup, plain_error
 from app.steps.plan import Step
-from app.steps.safety import pause_and_wait
+from app.steps.safety import pause_and_wait, risky_target
 from app.tools.browser import ALL_TOOLS, LOOK_ONLY, BrowserTools, ToolResult, declarations, tools_for_step
 from app.voice.narration import narrate_action
 
@@ -145,6 +145,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
     last_names: list[str] = []
     last_results: list[dict] = []
     is_last = step is plan[-1]
+    approved_next = False                    # the user just said yes to an ask_before
 
     while True:
         if run.actions_used >= cfg.MAX_AGENT_TURNS:
@@ -241,6 +242,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                     outcome = StepOutcome("stopped")
                     continue
                 pending.append(_response(name, True, "The user said yes. Go ahead."))
+                approved_next = True
                 continue
 
             if name in ("step_done", "task_complete"):
@@ -304,6 +306,19 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 pending.append(_response(name, False, "Out of actions for this task."))
                 outcome = StepOutcome("out_of_actions")
                 continue
+
+            # Sending, paying, booking, posting or deleting always needs a yes,
+            # whether or not the model asked first.
+            risky = risky_target(name, args, page)
+            said_yes, approved_next = approved_next, False   # a yes covers only the next action
+            if risky and not said_yes:
+                question = f"HandOff is about to {risky}. Go ahead?"
+                approved, _ = await pause_and_wait(run.session_id, "confirmation", question, run.ui)
+                if not approved:
+                    pending.append(_response(name, False, "The user said no."))
+                    await run.status("cancelled", "You said no, so I stopped.")
+                    outcome = StepOutcome("stopped")
+                    continue
 
             plain = action_in_plain_words(name, args)
             run.actions_used += 1
