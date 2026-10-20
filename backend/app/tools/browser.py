@@ -10,7 +10,7 @@ from typing import Any
 from google.genai import types
 
 from app.browser.base import BrowserAdapter
-from app.browser.page_view import element_by_id
+from app.browser.page_view import element_by_id, find_field
 from app.tools.web_rules import route, search_url
 
 
@@ -47,6 +47,12 @@ DECLARATIONS = {
                            "submit": {"type": "boolean"}}, ["element_id", "text"])),
     "choose_option": ("Pick an item from a dropdown, city picker, date list or suggestion list by its visible text. Give the dropdown's number if it isn't open yet.",
                       _schema({"text": {"type": "string"}, "element_id": ELEMENT}, ["text"])),
+    "fill_form": ("Fill several boxes of a form at once, matched by their labels. Text boxes are typed into, dropdowns "
+                  "are chosen from, checkboxes are ticked for yes. It never presses the form's submit button: click that yourself.",
+                  _schema({"fields": {"type": "array", "items": _schema(
+                      {"label": {"type": "string", "description": "The box's label as shown, e.g. 'From station'."},
+                       "value": {"type": "string", "description": "What to put in it; 'yes' or 'no' for a checkbox."}},
+                      ["label", "value"])}}, ["fields"])),
     "set_checked": ("Tick or untick a checkbox or switch by its number.",
                     _schema({"element_id": ELEMENT, "checked": {"type": "boolean"}}, ["element_id", "checked"])),
     "press_key": ("Press a key: Enter, Escape, Tab, ArrowDown, ArrowUp, PageDown, PageUp, Backspace.",
@@ -110,6 +116,10 @@ def _results_text(results: list[dict], start: int = 1) -> str:
     return "\n".join(f"{i}. {r.get('title', '')} ({r.get('url', '')})" for i, r in enumerate(results, start=start))
 
 
+YES = {"yes", "true", "on", "1", "tick", "ticked", "checked", "y"}
+TICK_ROLES = {"checkbox", "switch", "radio"}
+
+
 def items_text(found: dict, max_chars: int = 6000) -> str:
     """Tables and lists from the extension's pull_items, as short text for the model."""
     blocks = []
@@ -149,6 +159,59 @@ class BrowserTools:
         reply = await self.browser.execute_action("navigate", {"url": url})
         ok = reply is True or (isinstance(reply, dict) and reply.get("success") is not False)
         return ToolResult(ok, f"Opening {url}." if ok else _reply_detail(reply, f"Could not open {url}."), data=reply)
+
+    async def fill_form(self, fields: list) -> ToolResult:
+        page = await self.page_map() or self.last_page
+        filled, missing, refused, failed = [], [], [], []
+        used: set = set()
+        for field in fields or []:
+            if not isinstance(field, dict):
+                continue
+            label, value = str(field.get("label", "")).strip(), str(field.get("value", ""))
+            if not label:
+                continue
+            el = find_field(page, label, used)
+            if el is None:
+                # "Gender: Female" -> the radio button labelled "Female".
+                el = find_field(page, value, used)
+                if el is None or el.get("role") not in TICK_ROLES:
+                    missing.append(label)
+                    continue
+                value = "yes"
+            used.add(el.get("id"))
+            if el.get("secret"):
+                refused.append(label)
+                continue
+            role, el_id = el.get("role"), el.get("id")
+            if role in TICK_ROLES:
+                ticked = value.strip().lower() in YES
+                if role == "radio" and not ticked:
+                    continue
+                reply = await self.browser.execute_action("set_checked", {"element_id": el_id, "checked": ticked})
+            elif role == "dropdown":
+                reply = await self.browser.execute_action("choose_option", {"element_id": el_id, "text": value})
+            else:
+                reply = await self.browser.execute_action("type_text", {"element_id": el_id, "text": value, "submit": False})
+            if _reply_ok(reply) or reply is True:
+                chosen = reply.get("chosen") if isinstance(reply, dict) else None
+                filled.append(f"{el.get('label') or label} = {chosen or value}")
+            else:
+                failed.append(f"{label} ({_reply_detail(reply, 'did not work')})")
+
+        parts = []
+        if filled:
+            parts.append("Filled: " + "; ".join(filled) + ".")
+        if missing:
+            parts.append("No box found for: " + ", ".join(missing) + ". Scroll or check the labels in the page view.")
+        if refused:
+            parts.append("Not filled (password or card boxes, the user must do these): " + ", ".join(refused) + ".")
+        if failed:
+            parts.append("Could not fill: " + "; ".join(failed) + ".")
+        if not parts:
+            parts.append("No fields were given.")
+        if filled:
+            parts.append("The form has not been sent.")
+        return ToolResult(bool(filled), " ".join(parts), data={"filled": filled, "missing": missing})
 
     async def search_web(self, query: str, site: str = "", open_result: bool = True) -> ToolResult:
         query = query.strip()
@@ -222,6 +285,8 @@ class BrowserTools:
             if el is not None:
                 payload["element_id"] = el
             return await self._do("choose_option", payload, f"Chose \"{payload['text']}\".", f"Could not choose \"{payload['text']}\".")
+        if name == "fill_form":
+            return await self.fill_form(args.get("fields") or [])
         if name == "set_checked":
             checked = bool(args.get("checked"))
             return await self._do("set_checked", {"element_id": el, "checked": checked},

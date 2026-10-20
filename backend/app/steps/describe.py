@@ -42,6 +42,9 @@ def _page_action_in_plain_words(action_name: str, args: dict) -> str | None:
         return "Tick a box" if args.get("checked") else "Untick a box"
     if action_name == "press_key":
         return f"Press {args.get('key', 'a key')}"
+    if action_name == "fill_form":
+        count = len(args.get("fields") or [])
+        return f"Fill in {count} box{'es' if count != 1 else ''} on the form"
     if action_name == "search_web":
         where = f" on {args['site']}" if args.get("site") else ""
         return f"Search for '{args.get('query', '')}'{where}"

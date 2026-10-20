@@ -41,7 +41,7 @@ PAGE_RULES = (
     "3. Use look_at_screen only when the page view can't show it (pictures, maps, charts). "
     "click_at is only for things that have no number.\n"
     "4. Before paying, booking, sending a message, posting, deleting or sharing personal details, use ask_before.\n"
-    "5. Keep the user's exact names, places and dates.\n"
+    "5. Keep the user's exact names, places and dates. To fill two or more boxes of a form, use fill_form.\n"
     "6. To find something, use search_web: it goes to the right site or searches the web and opens the best result. "
     "Use open_page only for an address you already know. Don't type addresses or searches into a search engine yourself.\n"
     "7. When the current step is finished, call step_done with what shows it.\n"

@@ -72,3 +72,40 @@ async def test_pull_list_on_a_page_without_lists():
     browser = FakePageBrowser([BLANK], replies={"pull_items": {"success": True, "tables": [], "lists": []}})
     result = await BrowserTools(browser).run("pull_list", {})
     assert not result.ok and "read_page" in result.message
+
+
+FORM = page("https://www.irctc.co.in/nget/train-search",
+            ("text box", "From station"), ("text box", "To station"), ("dropdown", "Class"),
+            ("checkbox", "Student fare"), ("radio", "Female"), ("text box", "Password"), ("button", "Search"))
+FORM["elements"][5]["secret"] = True
+
+
+async def test_fill_form_uses_the_right_action_for_each_box_and_never_submits():
+    browser = FakePageBrowser([FORM], frozen=True, replies={"choose_option": {"success": True, "chosen": "AC 3 Tier (3A)"}})
+    result = await BrowserTools(browser).run("fill_form", {"fields": [
+        {"label": "From", "value": "Howrah"},
+        {"label": "To station", "value": "New Delhi"},
+        {"label": "class", "value": "AC 3 Tier"},
+        {"label": "Student fare", "value": "yes"},
+        {"label": "Gender", "value": "Female"},
+        {"label": "Password", "value": "hunter2"},
+        {"label": "Coach number", "value": "B2"},
+    ]})
+    assert browser.actions == [
+        ("type_text", {"element_id": 1, "text": "Howrah", "submit": False}),
+        ("type_text", {"element_id": 2, "text": "New Delhi", "submit": False}),
+        ("choose_option", {"element_id": 3, "text": "AC 3 Tier"}),
+        ("set_checked", {"element_id": 4, "checked": True}),
+        ("set_checked", {"element_id": 5, "checked": True}),
+    ]
+    assert result.ok
+    assert "Class = AC 3 Tier (3A)" in result.message
+    assert "No box found for: Coach number" in result.message
+    assert "Password" in result.message and "user must do these" in result.message
+    assert "has not been sent" in result.message
+
+
+async def test_fill_form_with_nothing_matching_fails():
+    browser = FakePageBrowser([FORM], frozen=True)
+    result = await BrowserTools(browser).run("fill_form", {"fields": [{"label": "Coach number", "value": "B2"}]})
+    assert not result.ok and browser.actions == []
