@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Booking form</title></head>
+<body>
+  <input aria-label="Guest name">
+  <button>Book now</button>
+  <script src="../page_map.js"></script>
+  <script>
+    // A frame from another site gets its size a moment after it loads.
+    (function send() {
+      if (!innerWidth) return requestAnimationFrame(send);
+      parent.postMessage(window.handoffPage.map(), "*");
+    })();
+  </script>
+</body>
+</html>

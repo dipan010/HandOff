@@ -1089,7 +1089,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-if (!window.__udaaConnectInitialized) {
+// Only the top page connects and shows badges; frames just read and act.
+if (window === window.top && !window.__udaaConnectInitialized) {
     window.__udaaConnectInitialized = true;
 
     // Auto-connect flow: check if a session ID was passed via URL or injected by Playwright
@@ -1122,7 +1123,7 @@ setTimeout(() => {
     const sensitiveDomains = ["accounts.google.com", ".bank", "paypal.com", "stripe.com", "login", "signin", "auth", "checkout", "pay."];
     const url = window.location.href.toLowerCase();
 
-    if (sensitiveDomains.some(d => url.includes(d)) && !document.getElementById("udaa-security-badge")) {
+    if (window === window.top && sensitiveDomains.some(d => url.includes(d)) && !document.getElementById("udaa-security-badge")) {
         const badge = document.createElement("div");
         badge.id = "udaa-security-badge";
         badge.innerHTML = "🔒 <b>Secure Page</b> &nbsp;|&nbsp; UDAA respects your privacy here.";

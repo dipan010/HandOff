@@ -26,6 +26,8 @@ def element_line(el: dict) -> str:
     href = el.get("href")
     if href and el.get("role") == "link" and not href.startswith("javascript"):
         line += f" -> {href}"
+    if el.get("frame"):
+        line += f" (in a frame from {el['frame']})"
     return line
 
 
@@ -51,6 +53,10 @@ def page_view_text(page: dict | None, note: str = "") -> str:
         lines.append("No buttons, links or boxes are visible.")
     if page.get("hidden_below"):
         lines.append(f"(+{page['hidden_below']} more items further down: scroll to see them)")
+    for host in page.get("payment_frames") or []:
+        lines.append(f"A payment form from {host} is on this page. HandOff never fills it in: use ask_before so the user can.")
+    for host in page.get("unreadable_frames") or []:
+        lines.append(f"Part of this page (from {host}) can't be read. Use look_at_screen if you need it.")
     if note:
         lines.append(note)
     return "\n".join(lines)

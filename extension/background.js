@@ -9,6 +9,8 @@
 // Actions and screenshots always go to the work tab, never to whatever tab
 // happens to be in front (the dashboard is a tab too).
 
+importScripts("frames.js");
+
 let ws = null;
 let streamingInterval = null;
 let currentSessionId = null;
@@ -16,6 +18,16 @@ let workTabId = null;
 
 // Tabs where content_script.js is already running, to avoid re-injection errors
 const injectedTabs = new Set();
+
+// Per tab: frameId -> frame number, so element numbers stay put (see frames.js).
+const frameIndexesByTab = new Map();
+// The frame HandOff last clicked or typed in, so key presses go to it.
+let lastFrameId = 0;
+
+function frameIndexes(tabId) {
+    if (!frameIndexesByTab.has(tabId)) frameIndexesByTab.set(tabId, new Map());
+    return frameIndexesByTab.get(tabId);
+}
 
 const PAGE_SCRIPTS = ["overlay.js", "page_map.js", "content_script.js"];
 
@@ -83,7 +95,7 @@ function ensureScripts(tabId, callback) {
         callback(true);
         return;
     }
-    chrome.scripting.executeScript({ target: { tabId }, files: PAGE_SCRIPTS }, () => {
+    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: PAGE_SCRIPTS }, () => {
         if (chrome.runtime.lastError) {
             console.warn("HandOff: could not add scripts to tab:", chrome.runtime.lastError.message);
             callback(false);
@@ -98,7 +110,7 @@ function sendToWorkTab(message, after) {
     getWorkTab((tab) => {
         if (!tab) return;
         ensureScripts(tab.id, () => {
-            chrome.tabs.sendMessage(tab.id, message, () => {
+            chrome.tabs.sendMessage(tab.id, message, { frameId: 0 }, () => {
                 void chrome.runtime.lastError; // tab may be loading; ignore
                 if (after) after();
             });
@@ -162,10 +174,34 @@ function executeInWorkTab(command) {
             return;
         }
         ensureScripts(tab.id, () => {
+            if (command.action === "page_map") {
+                pageMapAllFrames(tab);
+                return;
+            }
+            // Element numbers from a frame go to that frame; key presses and
+            // suggestion picks go to the frame last used; the rest to the top page.
+            let frameId = 0;
+            let args = command;
+            if (command.element_id != null) {
+                const { frameIndex, localId } = splitElementId(command.element_id);
+                if (frameIndex > 0) {
+                    frameId = frameIdForIndex(frameIndexes(tab.id), frameIndex);
+                    if (frameId == null) {
+                        reportResult({ action: command.action, success: false, stale: true,
+                                       detail: `Element ${command.element_id} is no longer on the page.` });
+                        return;
+                    }
+                    args = { ...command, element_id: localId };
+                }
+                lastFrameId = frameId;
+            } else if (command.action === "press_key" || command.action === "choose_option") {
+                // Keys and picking a suggestion follow the box HandOff just used.
+                frameId = lastFrameId;
+            }
             chrome.tabs.sendMessage(tab.id, {
                 type: "EXECUTE_ACTION",
-                payload: { action: command.action, args: command }
-            }, (response) => {
+                payload: { action: command.action, args }
+            }, { frameId }, (response) => {
                 if (chrome.runtime.lastError) {
                     console.warn("HandOff: could not reach the page:", chrome.runtime.lastError.message);
                 }
@@ -178,6 +214,23 @@ function executeInWorkTab(command) {
                 });
             });
         });
+    });
+}
+
+// One page map for the whole tab, frames included (see frames.js).
+function pageMapAllFrames(tab) {
+    chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: () => (window.handoffPage ? window.handoffPage.map() : null),
+    }, (results) => {
+        if (chrome.runtime.lastError || !results) {
+            reportResult({ action: "page_map", success: false,
+                           detail: "Could not read the page: " + (chrome.runtime.lastError ? chrome.runtime.lastError.message : "no answer") });
+            return;
+        }
+        const page = mergeFrameMaps(results, frameIndexes(tab.id));
+        reportResult(page ? { action: "page_map", success: true, page }
+                          : { action: "page_map", success: false, detail: "The page reader isn't loaded yet." });
     });
 }
 
@@ -295,11 +348,13 @@ chrome.tabs.onCreated.addListener((tab) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === 'loading' && changeInfo.url) {
         injectedTabs.delete(tabId);
+        frameIndexesByTab.delete(tabId);
     }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
     injectedTabs.delete(tabId);
+    frameIndexesByTab.delete(tabId);
     if (tabId === workTabId) {
         console.log("HandOff: work tab closed");
         workTabId = null;

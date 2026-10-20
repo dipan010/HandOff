@@ -10,7 +10,7 @@
 (function () {
     // Bump when the page reader changes, so a tab still holding an older copy
     // (from before the extension was reloaded) gets the new one.
-    const VERSION = 2;
+    const VERSION = 3;
     if (window.handoffPage && window.handoffPage.version >= VERSION) return;
 
     const ID_ATTR = "data-handoff-id";
@@ -26,6 +26,12 @@
         "[role=slider]", "[role=spinbutton]", "[role=treeitem]", "[role=gridcell][tabindex]",
         "[contenteditable=''], [contenteditable=true]", "[onclick]", "[tabindex]:not([tabindex='-1'])",
     ].join(",");
+
+    // Card forms that payment services put inside a frame. Every box in
+    // them is secret, whatever its label says.
+    const PAYMENT_HOST = /(^|\.)(stripe\.com|stripe\.network|razorpay\.com|paypal\.com|braintreegateway\.com|adyen\.com|checkout\.com|paytm\.com|payu\.in|cashfree\.com|juspay\.in|squareup\.com|ccavenue\.com)$/i;
+    const IN_FRAME = window !== window.top;
+    const PAYMENT_FRAME = IN_FRAME && PAYMENT_HOST.test(location.hostname);
 
     // Fields whose value must never leave the page.
     const SECRET_NAME = /pass(word)?|pwd|card|cc-?(num|number|csc|exp)|cvv|cvc|security.?code|\bpin\b|otp|one.?time/i;
@@ -128,6 +134,7 @@
     }
 
     function isSecret(el) {
+        if (PAYMENT_FRAME) return true;
         const type = (el.getAttribute("type") || "").toLowerCase();
         if (type === "password") return true;
         const hints = [el.name, el.id, el.getAttribute("autocomplete"), el.getAttribute("aria-label"), el.getAttribute("placeholder")].join(" ");
@@ -225,7 +232,23 @@
             },
             viewport: [window.innerWidth, window.innerHeight],
             dialog_open: !!document.querySelector("dialog[open], [role=dialog]:not([aria-hidden=true]), [aria-modal=true]"),
+            payment_frame: PAYMENT_FRAME || undefined,
+            frames: IN_FRAME ? undefined : visibleFrames(),
         };
+    }
+
+    // Frames big enough to matter and on screen; the extension reads each one
+    // and reports any it couldn't.
+    function visibleFrames() {
+        const out = [];
+        for (const frame of document.querySelectorAll("iframe, frame")) {
+            const rect = frame.getBoundingClientRect();
+            if (rect.width < 80 || rect.height < 40 || !inViewport(rect) || !isShown(frame)) continue;
+            const src = frame.src || "";
+            if (!/^https?:/.test(src)) continue;      // about:blank and srcdoc frames are read with the page
+            out.push({ src, box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)] });
+        }
+        return out;
     }
 
     // The readable text of the page: the main content if the page marks it,

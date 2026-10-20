@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Frame test</title></head>
+<body>
+  <button>Back to shop</button>
+  <!-- A booking form from another site, inside a frame -->
+  <iframe id="form" width="400" height="200" src="FRAME_URL"></iframe>
+  <iframe width="1" height="1" src="FRAME_URL"></iframe>  <!-- too small to matter -->
+  <pre id="out"></pre>
+  <script src="../page_map.js"></script>
+  <script>
+    window.addEventListener("message", (e) => {
+      if (e.source !== document.getElementById("form").contentWindow) return;
+      const top = window.handoffPage.map();
+      document.getElementById("out").textContent = JSON.stringify({ top, frame: e.data });
+    });
+  </script>
+</body>
+</html>
