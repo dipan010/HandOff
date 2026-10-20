@@ -347,6 +347,11 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 failures += 1
                 last_failure = result.message
 
+            # The action may have opened a sign-in or payment page: re-read the
+            # address so the next action in this turn is checked against it.
+            if index < len(calls) - 1:
+                url = await run.url() or url
+
         if outcome is not None:
             return outcome
 
