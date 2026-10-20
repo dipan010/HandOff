@@ -9,6 +9,7 @@
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.steps.model_call import Caller, ask_json
 
@@ -37,6 +38,19 @@ _LIVE_FACTS = re.compile(
     re.IGNORECASE,
 )
 
+# "What time is it?" and "what's the date?" are answered from the computer's clock.
+# Anything more ("the time in London", "the date of the match") is not.
+_TIME_QUESTION = re.compile(
+    r"^\s*(please\s+)?(what('s| is) the time|what time is it|time now|(tell me|what's|what is) the time( now)?"
+    r"|(tell me )?the time)( now| please| right now)?[\s?.!]*$",
+    re.IGNORECASE,
+)
+_DATE_QUESTION = re.compile(
+    r"^\s*(please\s+)?(what('s| is) (the )?date( today)?|what('s| is) today's date|today's date|date today"
+    r"|what day is it( today)?|what('s| is) the day( today)?)( please)?[\s?.!]*$",
+    re.IGNORECASE,
+)
+
 _GREETING_REPLIES = {
     "thanks": "You're welcome! Anything else I can do?",
     "default": "Hello! Tell me what you'd like to do and I'll take care of it.",
@@ -59,8 +73,20 @@ Rules:
 - If unsure, choose "task" and "hard"."""
 
 
-def quick_rule(task: str) -> Sorted | None:
-    """Handle obvious greetings and thanks without calling a model."""
+def clock_reply(task: str, now: datetime | None = None) -> str | None:
+    now = now or datetime.now()
+    if _TIME_QUESTION.match(task or ""):
+        return f"It's {now.strftime('%I:%M %p').lstrip('0')}."
+    if _DATE_QUESTION.match(task or ""):
+        return f"Today is {now.strftime('%A')}, {now.day} {now.strftime('%B %Y')}."
+    return None
+
+
+def quick_rule(task: str, now: datetime | None = None) -> Sorted | None:
+    """Handle greetings, thanks and clock questions without calling a model."""
+    clock = clock_reply(task, now)
+    if clock:
+        return Sorted(kind="chat", effort="quick", reply=clock)
     match = _GREETING.match(task or "")
     if not match:
         return None
