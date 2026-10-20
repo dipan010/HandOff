@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Actions test</title></head>
+<body>
+  <main>
+    <input id="to" placeholder="To station">
+    <select id="cls" aria-label="Class"><option>Sleeper</option><option selected>AC 3 Tier</option></select>
+    <label><input type="checkbox" id="student" checked> Student fare</label>
+    <button id="go" onclick="this.dataset.clicked = 'yes'">Search trains</button>
+    <div role="combobox" id="city" aria-label="City" onclick="document.getElementById('list').hidden = false">Pick a city</div>
+    <ul id="list" role="listbox" hidden><li role="option">Mumbai Central</li><li role="option" onclick="document.getElementById('city').textContent = 'Pune'">Pune Junction</li></ul>
+  </main>
+  <pre id="out"></pre>
+  <script>
+    // Stand-in for the extension API so content_script.js can load in a normal page.
+    window.chrome = { runtime: { onMessage: { addListener() {} }, sendMessage() {} } };
+  </script>
+  <script src="../page_map.js"></script>
+  <script src="../content_script.js"></script>
+  <script>
+    (async () => {
+      const ids = {};
+      for (const e of window.handoffPage.map().elements) ids[e.label] = e.id;
+      const run = window.udaa.runAction;
+      const results = {
+        type: await run("type_text", { element_id: ids["To station"], text: "Mumbai", submit: false }),
+        select: await run("choose_option", { element_id: ids["Class"], text: "sleeper" }),
+        uncheck: await run("set_checked", { element_id: ids["Student fare"], checked: false }),
+        click: await run("click_element", { element_id: ids["Search trains"] }),
+        custom: await run("choose_option", { element_id: ids["City"], text: "Pune" }),
+        stale: await run("click_element", { element_id: 9999 }),
+        map: await run("page_map"),
+      };
+      const state = {
+        to: document.getElementById("to").value,
+        cls: document.getElementById("cls").value,
+        student: document.getElementById("student").checked,
+        clicked: document.getElementById("go").dataset.clicked || "no",
+        city: document.getElementById("city").textContent,
+      };
+      document.getElementById("out").textContent = JSON.stringify({ results, state });
+    })();
+  </script>
+</body>
+</html>

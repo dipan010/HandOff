@@ -502,12 +502,183 @@ async function executeAction(action, args) {
         }
         return false;
     }
+
+    // ── Actions by element number (from page_map.js) ──────────────────────
+    const byId = await _runElementAction(action, args);
+    if (byId !== undefined) return byId;
     return false;
+}
+
+function _gone(id) {
+    return { success: false, stale: true, detail: `Element ${id} is no longer on the page.` };
+}
+
+function _center(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+async function _bringIntoView(el) {
+    const r = el.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > window.innerHeight || r.left < 0 || r.right > window.innerWidth) {
+        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+        await new Promise(res => setTimeout(res, 120));
+    }
+}
+
+// Click a specific element with the full pointer/mouse sequence that
+// React, Vue and plain pages all listen for.
+function _clickElement(el) {
+    const { x, y } = _center(el);
+    if (window.udaaOverlay) window.udaaOverlay.drawHighlight(x, y);
+    const init = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1 };
+    el.dispatchEvent(new PointerEvent("pointerdown", init));
+    el.dispatchEvent(new MouseEvent("mousedown", init));
+    if (typeof el.focus === "function") el.focus({ preventScroll: true });
+    el.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("click", { ...init, buttons: 0 }));
+    window.udaaLastClickedElement = el;
+    window._udaaLastClickX = x;
+    window._udaaLastClickY = y;
+}
+
+function _matchOption(options, wanted) {
+    const needle = (wanted || "").toLowerCase().trim();
+    const text = (o) => (o.text || o.textContent || "").toLowerCase().trim();
+    return options.find(o => text(o) === needle || (o.value || "").toLowerCase() === needle)
+        || options.find(o => text(o).startsWith(needle))
+        || options.find(o => text(o).includes(needle));
+}
+
+const _KEYS = {
+    enter: ["Enter", 13], escape: ["Escape", 27], esc: ["Escape", 27], tab: ["Tab", 9],
+    backspace: ["Backspace", 8], delete: ["Delete", 46], space: [" ", 32],
+    arrowdown: ["ArrowDown", 40], down: ["ArrowDown", 40], arrowup: ["ArrowUp", 38], up: ["ArrowUp", 38],
+    arrowleft: ["ArrowLeft", 37], left: ["ArrowLeft", 37], arrowright: ["ArrowRight", 39], right: ["ArrowRight", 39],
+    pagedown: ["PageDown", 34], pageup: ["PageUp", 33], home: ["Home", 36], end: ["End", 35],
+};
+
+async function _runElementAction(action, args) {
+    const page = window.handoffPage;
+    if (!page) return action.startsWith("page_") || action === "read_text" ? { success: false, detail: "Page reader not loaded." } : undefined;
+
+    if (action === "page_map") {
+        return { success: true, page: page.map() };
+    }
+    if (action === "read_text") {
+        return { success: true, ...page.readText(args.max_chars || undefined) };
+    }
+    if (action === "go_back") {
+        history.back();
+        return true;
+    }
+
+    if (action === "click_element") {
+        const el = page.element(args.element_id);
+        if (!el) return _gone(args.element_id);
+        await _bringIntoView(el);
+        _clickElement(el);
+        return true;
+    }
+
+    if (action === "type_text") {
+        let el = page.element(args.element_id);
+        if (!el) return _gone(args.element_id);
+        if (!_isTypeable(el)) {
+            // A wrapper was picked: use the box inside it, or what clicking it opens.
+            el = el.querySelector("input:not([type=hidden]), textarea, [contenteditable=true], [contenteditable='']")
+                || (await (async () => { _clickElement(el); return _watchForNewInput(800); })());
+            if (!el) return { success: false, detail: "That element can't be typed into." };
+        }
+        await _bringIntoView(el);
+        _clickElement(el);
+        if (args.clear !== false) _setInputValue(el, "");
+        _setInputValue(el, args.text || "");
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        if (args.submit) {
+            await new Promise(res => setTimeout(res, 80));
+            _fireEnter(el);
+        }
+        return true;
+    }
+
+    if (action === "choose_option") {
+        const el = args.element_id != null ? page.element(args.element_id) : null;
+        if (args.element_id != null && !el) return _gone(args.element_id);
+        if (el && el.tagName === "SELECT") {
+            const opt = _matchOption([...el.options], args.text);
+            if (!opt) return { success: false, detail: `No option like "${args.text}" in that dropdown.`, options: [...el.options].slice(0, 30).map(o => o.text.trim()) };
+            el.value = opt.value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { success: true, chosen: opt.text.trim() };
+        }
+        if (el) {
+            // Custom dropdown: open it, then look for the option.
+            await _bringIntoView(el);
+            _clickElement(el);
+            await new Promise(res => setTimeout(res, 350));
+        }
+        const option = _findDropdownOption(args.text);
+        if (!option) return { success: false, detail: `Could not find an option like "${args.text}".` };
+        await _bringIntoView(option);
+        _clickElement(option);
+        return { success: true, chosen: (option.textContent || "").trim().slice(0, 80) };
+    }
+
+    if (action === "set_checked") {
+        const el = page.element(args.element_id);
+        if (!el) return _gone(args.element_id);
+        const now = !!(el.checked || el.getAttribute("aria-checked") === "true");
+        if (now !== !!args.checked) {
+            await _bringIntoView(el);
+            _clickElement(el);
+        }
+        return true;
+    }
+
+    if (action === "press_key") {
+        const name = String(args.key || "").toLowerCase().replace(/\s+/g, "");
+        const [key, code] = _KEYS[name] || [args.key, 0];
+        const target = document.activeElement || document.body;
+        if (key === "Enter") {
+            _fireEnter(target);
+            return true;
+        }
+        for (const type of ["keydown", "keyup"]) {
+            target.dispatchEvent(new KeyboardEvent(type, { key, code: key, keyCode: code, which: code, bubbles: true, cancelable: true }));
+        }
+        if (key === "Escape" && typeof target.blur === "function") target.blur();
+        return true;
+    }
+
+    if (action === "scroll_page") {
+        const amount = Math.max(1, Math.min(10, Number(args.amount) || 3));
+        const dir = (args.direction || "down").toLowerCase();
+        const step = 0.8 * window.innerHeight * (amount / 3);
+        const dy = dir === "down" ? step : dir === "up" ? -step : 0;
+        const dx = dir === "right" ? step : dir === "left" ? -step : 0;
+        let target = window;
+        if (args.element_id != null) {
+            const el = page.element(args.element_id);
+            if (!el) return _gone(args.element_id);
+            target = _findScrollableContainer(el) || (el.scrollHeight > el.clientHeight ? el : window);
+        }
+        target.scrollBy({ left: dx, top: dy, behavior: "instant" });
+        return true;
+    }
+
+    return undefined;
 }
 
 
 
 window.udaa = {
+    // Lets a test page (or DevTools) run an action the way the backend would.
+    runAction: (action, args = {}) => executeAction(action, { action, ...args }),
+
     getDOMSnapshot: () => {
         return document.documentElement.outerHTML;
     },

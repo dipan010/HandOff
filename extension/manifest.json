@@ -24,6 +24,7 @@
             "js": [
                 "overlay.js",
                 "websocket_client.js",
+                "page_map.js",
                 "content_script.js"
             ]
         }

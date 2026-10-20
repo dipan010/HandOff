@@ -17,7 +17,7 @@ let workTabId = null;
 // Tabs where content_script.js is already running, to avoid re-injection errors
 const injectedTabs = new Set();
 
-const PAGE_SCRIPTS = ["overlay.js", "content_script.js"];
+const PAGE_SCRIPTS = ["overlay.js", "page_map.js", "content_script.js"];
 
 chrome.runtime.onInstalled.addListener(() => {
     console.log("HandOff extension installed.");
