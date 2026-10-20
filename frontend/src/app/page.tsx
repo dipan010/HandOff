@@ -37,10 +37,22 @@ export default function Home() {
     cancelTask,
   } = useWebSocket(sessionId);
 
-  // Generate a new session ID on mount
+  // Keep this tab's session ID across reloads, so a reload picks up a running task.
   useEffect(() => {
     if (!sessionId) {
-      setSessionId(Math.random().toString(36).substring(2, 10));
+      let saved: string | null = null;
+      try {
+        saved = window.sessionStorage.getItem("handoff_session_id");
+      } catch {
+        // storage blocked: fall back to a new ID
+      }
+      const id = saved || Math.random().toString(36).substring(2, 10);
+      try {
+        window.sessionStorage.setItem("handoff_session_id", id);
+      } catch {
+        // ignore
+      }
+      setSessionId(id);
     }
   }, [sessionId]);
 

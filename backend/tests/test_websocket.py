@@ -63,3 +63,39 @@ def test_an_old_socket_does_not_remove_a_newer_one():
     manager = manager_with(new)
     manager.disconnect("s1", old)
     assert manager.active_connections["s1"] is new
+
+
+async def test_a_reconnecting_dashboard_gets_the_plan_steps_and_status_again():
+    import json
+    manager = ConnectionManager()
+    first = FakeSocket()
+    manager.active_connections["s1"] = first
+    await manager.send_plan("s1", [{"number": 1, "title": "Open YouTube"}, {"number": 2, "title": "Play"}])
+    await manager.send_step_update("s1", 1, "done", "YouTube is open")
+    await manager.send_step_update("s1", 2, "working")
+    await manager.send_status("s1", "thinking", "Step 2: Play")
+    await manager.send_narration("s1", "not replayed")
+    manager.disconnect("s1", first)
+
+    again = FakeSocket()
+    again.accept = lambda: _done()
+    await manager.connect("s1", again)
+    types = [json.loads(m)["type"] for m in again.sent]
+    assert types == ["plan", "step_update", "step_update", "status_update"]
+
+
+async def test_nothing_is_replayed_after_the_task_ends():
+    manager = ConnectionManager()
+    first = FakeSocket()
+    manager.active_connections["s1"] = first
+    await manager.send_plan("s1", [{"number": 1, "title": "Open YouTube"}])
+    await manager.send_task_complete("s1", "Done.")
+    manager.disconnect("s1", first)
+    again = FakeSocket()
+    again.accept = lambda: _done()
+    await manager.connect("s1", again)
+    assert again.sent == []
+
+
+async def _done():
+    return None

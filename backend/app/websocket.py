@@ -20,6 +20,9 @@ class ConnectionManager:
         # status updates come from different tasks, and overlapping sends
         # on one socket fail.
         self._send_locks: dict[int, asyncio.Lock] = {}
+        # What a dashboard needs to redraw a running task after a reload or a
+        # network drop: the plan, each step's latest state, and the status.
+        self._replay: dict[str, dict] = {}
 
     async def _send(self, ws: WebSocket, text: str):
         lock = self._send_locks.setdefault(id(ws), asyncio.Lock())
@@ -31,10 +34,39 @@ class ConnectionManager:
         return ws.client_state != WebSocketState.CONNECTED or ws.application_state != WebSocketState.CONNECTED
 
     async def connect(self, session_id: str, websocket: WebSocket):
-        """Accept and register a WebSocket connection."""
+        """Accept and register a WebSocket connection, and catch it up on a running task."""
         await websocket.accept()
         self.active_connections[session_id] = websocket
         logger.info(f"WebSocket connected: session={session_id}")
+        for message in self._replay_messages(session_id):
+            await self.send_message(session_id, message)
+
+    def _remember(self, session_id: str, message: dict[str, Any]):
+        kind = message.get("type")
+        if kind == "plan":
+            replay = self._replay.setdefault(session_id, {})
+            if not (message.get("data") or {}).get("revision"):
+                replay.clear()        # a new task's plan: forget the old one
+            replay["plan"] = message
+            replay.setdefault("steps", {}).clear()
+        elif kind == "step_update" and session_id in self._replay:
+            number = (message.get("data") or {}).get("number")
+            self._replay[session_id].setdefault("steps", {})[number] = message
+        elif kind == "status_update" and session_id in self._replay:
+            if (message.get("data") or {}).get("status") in ("cancelled", "completed"):
+                self._replay.pop(session_id, None)
+            else:
+                self._replay[session_id]["status"] = message
+        elif kind in ("task_complete", "error"):
+            self._replay.pop(session_id, None)
+
+    def _replay_messages(self, session_id: str) -> list[dict]:
+        replay = self._replay.get(session_id) or {}
+        messages = [replay["plan"]] if "plan" in replay else []
+        messages += list((replay.get("steps") or {}).values())
+        if "status" in replay:
+            messages.append(replay["status"])
+        return messages
 
     def disconnect(self, session_id: str, websocket: WebSocket | None = None):
         """Remove a WebSocket connection (only `websocket`, if given, not a newer one)."""
@@ -82,6 +114,7 @@ class ConnectionManager:
 
     async def send_message(self, session_id: str, message: dict[str, Any]):
         """Send a JSON message to a specific session."""
+        self._remember(session_id, message)
         ws = self.active_connections.get(session_id)
         if ws:
             try:

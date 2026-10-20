@@ -155,6 +155,35 @@ async def get_sessions():
 
 # --- WebSocket Endpoint ---
 
+# How long a task keeps running after its dashboard disconnects (a reload or a
+# short network drop). A dashboard that reconnects in time picks the task up again.
+DASHBOARD_GRACE_SECONDS = settings.DASHBOARD_GRACE_SECONDS
+_pending_stops: dict[str, asyncio.Task] = {}
+
+
+def dashboard_gone(session_id: str):
+    """Stop the task only if the dashboard hasn't come back after the grace period."""
+    if session_id not in active_sessions:
+        return
+
+    async def stop_later():
+        await asyncio.sleep(DASHBOARD_GRACE_SECONDS)
+        _pending_stops.pop(session_id, None)
+        if session_id not in ws_manager.active_connections:
+            logger.info(f"Dashboard didn't come back; stopping the task: session={session_id}")
+            await stop_session(session_id)
+
+    dashboard_back(session_id)
+    _pending_stops[session_id] = asyncio.create_task(stop_later())
+
+
+def dashboard_back(session_id: str):
+    pending = _pending_stops.pop(session_id, None)
+    if pending and not pending.done():
+        pending.cancel()
+        logger.info(f"Dashboard came back; the task keeps running: session={session_id}")
+
+
 async def stop_session(session_id: str):
     """Stop the task running for this session, if any, and close its tab adapter."""
     session = active_sessions.pop(session_id, None)
@@ -176,6 +205,7 @@ async def stop_session(session_id: str):
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Main WebSocket endpoint for real-time agent communication."""
     await ws_manager.connect(session_id, websocket)
+    dashboard_back(session_id)
 
     try:
         while True:
@@ -326,9 +356,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: session={session_id}")
         ws_manager.disconnect(session_id, websocket)
-        # Clean up the session unless a newer dashboard connection took it over.
+        # Keep the task running for a short while: a reload or a network drop
+        # reconnects with the same session and picks it up again.
         if session_id not in ws_manager.active_connections:
-            await stop_session(session_id)
+            dashboard_gone(session_id)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         ws_manager.disconnect(session_id, websocket)
