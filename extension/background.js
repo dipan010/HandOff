@@ -112,10 +112,53 @@ function reportResult(result) {
     }
 }
 
+// Wait until the tab has finished loading (or give up after `timeoutMs`).
+function waitForLoad(tabId, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+            if (done) return;
+            done = true;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer);
+            chrome.tabs.get(tabId, (tab) => resolve(chrome.runtime.lastError ? null : tab));
+        };
+        const listener = (id, info) => { if (id === tabId && info.status === "complete") finish(); };
+        const timer = setTimeout(finish, timeoutMs);
+        chrome.tabs.onUpdated.addListener(listener);
+    });
+}
+
+// Going to another page unloads the page script before it can reply, so the
+// background does it with the tabs API and replies once the page has loaded.
+async function navigateWorkTab(tab, command) {
+    try {
+        if (command.action === "go_back") {
+            await chrome.tabs.goBack(tab.id);
+        } else {
+            const url = command.url;
+            if (!url || url === "about:blank") {
+                reportResult({ action: command.action, success: true, url: tab.url });
+                return;
+            }
+            await chrome.tabs.update(tab.id, { url });
+        }
+        const loaded = await waitForLoad(tab.id);
+        captureAndSendFrame();
+        reportResult({ action: command.action, success: true, url: loaded ? loaded.url : command.url });
+    } catch (e) {
+        reportResult({ action: command.action, success: false, detail: String(e && e.message || e) });
+    }
+}
+
 function executeInWorkTab(command) {
     getWorkTab((tab) => {
         if (!tab) {
             reportResult({ action: command.action, success: false, detail: "HandOff's tab was closed." });
+            return;
+        }
+        if (command.action === "navigate" || command.action === "open_web_browser" || command.action === "go_back") {
+            navigateWorkTab(tab, command);
             return;
         }
         ensureScripts(tab.id, () => {

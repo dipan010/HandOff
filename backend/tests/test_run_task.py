@@ -20,6 +20,8 @@ def quiet_side_effects(monkeypatch):
 
 
 def cfg(**overrides):
+    # These tests drive the screenshot mode; page mode has its own tests.
+    overrides.setdefault("ACTION_MODE", "screenshot")
     return Settings(GOOGLE_API_KEY="test", **overrides)
 
 

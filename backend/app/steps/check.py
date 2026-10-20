@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 class ScreenState:
     url: str
     screen_hash: str
+    page_hash: str = ""   # from the page map; ignores videos and animations
 
     @classmethod
-    def of(cls, url: str, screenshot: bytes) -> "ScreenState":
-        return cls(url=url or "", screen_hash=hashlib.md5(screenshot or b"").hexdigest())
+    def of(cls, url: str, screenshot: bytes | None, page_hash: str = "") -> "ScreenState":
+        return cls(url=url or "", screen_hash=hashlib.md5(screenshot or b"").hexdigest(), page_hash=page_hash)
 
 
 @dataclass
@@ -48,7 +49,11 @@ def changed(before: ScreenState, after: ScreenState, action_results: list[dict],
         return CheckResult(False, f"The browser reported that '{failed[0].get('action', 'the action')}' failed: {detail}.")
     if before.url != after.url:
         return CheckResult(True, f"The page changed to {after.url}.")
-    if before.screen_hash != after.screen_hash:
+    if before.page_hash and after.page_hash:
+        # Compare what's on the page, not pixels: a playing video changes every frame.
+        if before.page_hash != after.page_hash:
+            return CheckResult(True, "The page changed.")
+    elif before.screen_hash != after.screen_hash:
         return CheckResult(True, "The screen changed.")
     if action_names and all(n in NO_VISIBLE_CHANGE_OK for n in action_names):
         return CheckResult(True, "Nothing needed to change.")
@@ -62,7 +67,7 @@ Current step: "{title}"
 The step is finished when: "{done_when}"
 Current page address: {url}
 {page_text}
-Look at the screenshot. Is the step finished?
+Look at the page (and the screenshot, if there is one). Is the step finished?
 
 Answer with JSON only:
 {{"done": true | false, "reason": "one short sentence about what you see"}}
@@ -74,7 +79,7 @@ If the page shows that the thing cannot be done (no results, sold out, not avail
 async def is_step_done(
     task: str,
     step: Step,
-    screenshot: bytes,
+    screenshot: bytes | None,
     url: str,
     caller: Caller,
     model: str,
@@ -85,10 +90,10 @@ async def is_step_done(
         task=task, title=step.title, done_when=step.done_when, url=url or "unknown",
         page_text=f"Text on the page:\n{page_text[:4000]}\n" if page_text else "",
     )
-    contents = [types.Content(role="user", parts=[
-        types.Part(text=prompt),
-        types.Part(inline_data=types.Blob(mime_type="image/png", data=screenshot)),
-    ])]
+    parts = [types.Part(text=prompt)]
+    if screenshot:
+        parts.append(types.Part(inline_data=types.Blob(mime_type="image/png", data=screenshot)))
+    contents = [types.Content(role="user", parts=parts)]
     try:
         answer = await ask_json(caller, model, backup, contents)
     except Exception as err:

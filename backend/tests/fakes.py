@@ -137,3 +137,59 @@ class FakeBrowser:
 
     async def close(self):
         pass
+
+
+def page(url: str, *items, below: int = 0) -> dict:
+    """A page map like extension/page_map.js returns. Items are (role, label[, value[, state]])."""
+    elements = []
+    for i, item in enumerate(items, start=1):
+        role, label = item[0], item[1]
+        value = item[2] if len(item) > 2 else ""
+        state = item[3] if len(item) > 3 else []
+        elements.append({"id": i, "role": role, "label": label, "value": value, "state": state, "box": [0, 0, 10, 10]})
+    return {"url": url, "title": url, "elements": elements, "hidden_below": below,
+            "scroll": {"y": 0, "max": 0}, "dialog_open": False}
+
+
+def calls_reply(*calls):
+    """A model answer with several tool calls in one turn."""
+    parts = [_types.Part(function_call=_types.FunctionCall(name=n, args=a)) for n, a in calls]
+    return SimpleNamespace(candidates=[SimpleNamespace(content=_types.Content(role="model", parts=parts))])
+
+
+class FakePageBrowser(FakeBrowser):
+    """Serves page maps from a list; each real action moves to the next page.
+
+    `replies` lets a test make specific actions fail, e.g. {"click_element": {...}}.
+    """
+
+    LOOK_ONLY = {"page_map", "read_text", "get_current_url"}
+
+    def __init__(self, pages, text="Some page text.", frozen=False, replies=None):
+        super().__init__(url=pages[0]["url"], frozen=frozen)
+        self.pages = pages
+        self.text = text
+        self.replies = replies or {}
+        self.index = 0
+
+    @property
+    def current(self):
+        return self.pages[min(self.index, len(self.pages) - 1)]
+
+    async def get_current_url(self):
+        return self.current["url"]
+
+    async def execute_action(self, name, args):
+        if name == "page_map":
+            return {"success": True, "page": self.current}
+        if name == "read_text":
+            return {"success": True, "text": self.text, "url": self.current["url"]}
+        if name == "get_current_url":
+            return {"success": True, "url": self.current["url"]}
+        self.actions.append((name, args))
+        if name in self.replies:
+            return self.replies[name]
+        if not self.frozen:
+            self.index += 1
+            self._frame += 1
+        return {"success": True, "action": name}

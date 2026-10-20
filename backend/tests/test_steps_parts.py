@@ -1,3 +1,4 @@
+import pytest
 from google.genai import types
 
 from app.steps import model_call
@@ -135,3 +136,22 @@ async def test_general_knowledge_can_still_be_chat():
     caller = FakeCaller(sort=[{"kind": "chat", "effort": "quick", "reply": "Paris."}])
     result = await sort_request("What is the capital of France?", "", caller, "sorter", "backup")
     assert result.kind == "chat"
+
+
+async def test_no_credit_is_not_retried_or_sent_to_backup():
+    from app.steps.model_call import ask_with_backup, is_busy_error
+
+    class Broke:
+        def __init__(self):
+            self.models = []
+
+        async def ask(self, model, contents, config=None):
+            self.models.append(model)
+            raise RuntimeError("402 RESOURCE_EXHAUSTED. Your prepayment credits are depleted.")
+
+    caller = Broke()
+    with pytest.raises(RuntimeError):
+        await ask_with_backup(caller, "fast", "backup", "hi")
+    assert caller.models == ["fast"]
+    assert not is_busy_error(RuntimeError("402 RESOURCE_EXHAUSTED prepayment"))
+    assert is_busy_error(RuntimeError("429 RESOURCE_EXHAUSTED"))

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
 
     # "steps" = plan, do, check (default). "classic" = the original single loop.
     TASK_FLOW: str = "steps"
+    # How steps act. "page" (default): read the page map and act on numbered
+    # items with ordinary tool calls (any Gemini model). "screenshot": the
+    # Computer Use model clicks on screenshots (needs paid quota).
+    ACTION_MODE: str = "page"
     MAX_STEP_ACTIONS: int = 10      # actions allowed on one step before re-planning
     MAX_STEP_RETRIES: int = 3       # failed attempts on one step before re-planning
     MAX_PLAN_REVISIONS: int = 2     # re-plans allowed per task

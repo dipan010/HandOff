@@ -30,6 +30,7 @@ from app.steps.check import ScreenState, changed, is_step_done
 from app.steps.describe import action_in_plain_words
 from app.steps.finish import finish_task
 from app.steps.model_call import Caller, GeminiCaller, plain_error
+from app.steps.page_step import do_step_by_page
 from app.steps.plan import Step, make_plan, revise_plan
 from app.steps.safety import SignInGuard, pause_and_wait
 from app.steps.sort import sort_request
@@ -149,6 +150,7 @@ class TaskRun:
     last_action_finish: float = 0.0
     next_screenshot: bytes | None = None
     sign_in_guard: SignInGuard | None = None
+    action_model: str = ""   # model used to choose page actions (quick: FAST, hard: STRONG)
 
     def __post_init__(self):
         if self.sign_in_guard is None:
@@ -444,6 +446,7 @@ async def run_task(
         await open_browser()
     await run.say_on_it()
     plan_model = cfg.STRONG_MODEL if sorted_request.effort == "hard" else cfg.FAST_MODEL
+    run.action_model = plan_model
     await run.status("thinking", "Planning the steps...")
     remaining = await make_plan(task, start_url, run.caller, plan_model, cfg.BACKUP_MODEL)
     finished: list[Step] = []
@@ -454,7 +457,10 @@ async def run_task(
     while remaining:
         step = remaining[0]
         await ui.send_step_update(session_id, step.number, "working")
-        outcome = await run.do_step(step, finished + remaining)
+        if cfg.ACTION_MODE == "screenshot":
+            outcome = await run.do_step(step, finished + remaining)
+        else:
+            outcome = await do_step_by_page(run, step, finished + remaining)
 
         if outcome.kind == "done":
             finished.append(remaining.pop(0))

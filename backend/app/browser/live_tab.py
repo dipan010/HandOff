@@ -117,7 +117,9 @@ class LiveBrowserAdapter(BrowserAdapter):
 
             try:
                 # Wait for extension to reply with 'action_result'
-                ext_result = await asyncio.wait_for(self._action_result_future, timeout=10.0)
+                # Page loads are waited for by the extension (up to 10 s), so allow longer.
+                timeout = 20.0 if action_name in ("navigate", "open_web_browser", "go_back") else 10.0
+                ext_result = await asyncio.wait_for(self._action_result_future, timeout=timeout)
                 return ext_result
             except asyncio.TimeoutError:
                 logger.warning(f"Extension action timeout for {action_name}")

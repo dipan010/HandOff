@@ -17,6 +17,27 @@ logger = logging.getLogger(__name__)
 
 BUSY_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")
 RETRY_DELAYS = (2, 4)  # seconds; two retries after the first try
+MAX_WAIT_FOR_LIMIT = 60  # seconds: wait out a per-minute limit, but not a daily one
+
+_RETRY_DELAY = re.compile(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s")
+
+
+def retry_delay_seconds(err: Exception) -> float | None:
+    """The wait Gemini asks for in a 429 error, if it gives one."""
+    match = _RETRY_DELAY.search(str(err))
+    return float(match.group(1)) if match else None
+
+
+def is_daily_limit(err: Exception) -> bool:
+    text = str(err)
+    if "PerDay" in text:
+        return True
+    delay = retry_delay_seconds(err)
+    return delay is not None and delay > MAX_WAIT_FOR_LIMIT
+
+
+class DailyLimitReached(RuntimeError):
+    """Raised instead of waiting hours for a daily free-tier limit to reset."""
 
 
 class Caller(Protocol):
@@ -24,14 +45,27 @@ class Caller(Protocol):
         """Return the raw Gemini response for `contents`."""
 
 
+def is_account_problem(err: Exception) -> bool:
+    """No credit, bad key or API switched off: retrying or another model won't help."""
+    text = str(err).upper()
+    return ("402" in text or "PREPAYMENT" in text or "PERMISSION_DENIED" in text
+            or "API_KEY_INVALID" in text or "SERVICE_DISABLED" in text)
+
+
 def is_busy_error(err: Exception) -> bool:
+    if is_account_problem(err):
+        return False
     text = str(err).upper()
     return any(m in text for m in BUSY_MARKERS)
 
 
 def plain_error(err: Exception) -> str:
     """Turn a Gemini error into a sentence a user can understand."""
+    if isinstance(err, DailyLimitReached) or is_daily_limit(err):
+        return "Today's free Gemini limit is used up. Try again tomorrow, or add credit to the Google Cloud project."
     text = str(err).upper()
+    if "402" in text or "PREPAYMENT" in text:
+        return "The Gemini account has no credit left. Add prepaid credit in AI Studio (ai.studio/projects)."
     if "503" in text or "UNAVAILABLE" in text:
         return "The Gemini service is busy. Please try again in a minute."
     if "429" in text or "RESOURCE_EXHAUSTED" in text:
@@ -58,9 +92,12 @@ class GeminiCaller:
                     config=config,
                 )
             except Exception as err:
+                if is_busy_error(err) and is_daily_limit(err):
+                    raise DailyLimitReached(str(err)) from err
                 if is_busy_error(err) and attempt < len(self._retry_delays):
-                    delay = self._retry_delays[attempt]
-                    logger.warning(f"Gemini busy on {model} ({err}); retrying in {delay}s")
+                    asked = retry_delay_seconds(err)
+                    delay = min(asked + 1, MAX_WAIT_FOR_LIMIT) if asked else self._retry_delays[attempt]
+                    logger.warning(f"Gemini busy on {model}; retrying in {delay:.0f}s")
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -71,7 +108,7 @@ async def ask_with_backup(caller: Caller, model: str, backup: str | None, conten
     try:
         return await caller.ask(model, contents, config)
     except Exception as err:
-        if not backup or backup == model:
+        if not backup or backup == model or is_account_problem(err):
             raise
         logger.warning(f"{model} failed ({err}); using backup model {backup}")
         return await caller.ask(backup, contents, config)
