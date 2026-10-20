@@ -26,9 +26,12 @@ class Settings(BaseSettings):
     # SORT_MODEL decides if a request is chat or a task, and quick or hard.
     # Quick tasks are planned with FAST_MODEL, hard ones with STRONG_MODEL.
     # BACKUP_MODEL is tried once whenever one of those calls fails.
-    SORT_MODEL: str = "gemini-2.5-flash-lite"
-    FAST_MODEL: str = "gemini-2.5-flash"
-    STRONG_MODEL: str = "gemini-2.5-pro"
+    # gemini-2.5-flash-lite and gemini-2.5-pro are closed to new projects.
+    # STRONG_MODEL needs a paid (billing-enabled) project; on the free tier its
+    # calls fail and BACKUP_MODEL answers instead.
+    SORT_MODEL: str = "gemini-3.5-flash-lite"
+    FAST_MODEL: str = "gemini-3.5-flash"
+    STRONG_MODEL: str = "gemini-3.1-pro-preview"
     BACKUP_MODEL: str = "gemini-2.5-flash"
 
     # "steps" = plan, do, check (default). "classic" = the original single loop.
