@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     MAX_STEP_RETRIES: int = 3       # failed attempts on one step before re-planning
     MAX_PLAN_REVISIONS: int = 2     # re-plans allowed per task
     KEEP_SCREENSHOTS: int = 3       # screenshots kept in the action model's history
+    MODEL_CALL_TIMEOUT: float = 45  # seconds one Gemini call may take before it is tried again
 
     # Browser / Screen
     SCREEN_WIDTH: int = 1440

@@ -428,7 +428,7 @@ async def run_task(
     cfg = cfg or get_settings()
     run = TaskRun(
         session_id=session_id, task=task, start_url=start_url, browser=browser,
-        caller=caller or GeminiCaller(cfg.GOOGLE_API_KEY), ui=ui, cfg=cfg,
+        caller=caller or GeminiCaller(cfg.GOOGLE_API_KEY, timeout=cfg.MODEL_CALL_TIMEOUT), ui=ui, cfg=cfg,
         timing=timing or Timing.for_mode(patience_mode),
         grandparents_mode=grandparents_mode,
         last_action_time_ref=last_action_time_ref,

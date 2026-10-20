@@ -113,3 +113,38 @@ async def test_task_stops_at_once_when_every_model_is_used_up(monkeypatch):
     assert [args[0] for args in sent(ui, "send_error")][0].startswith("I've used today's free Gemini requests")
     assert opened == [] and browser.actions == []
     assert caller.count("plan") == 0 and caller.count("action") == 0
+
+
+class SlowModels(FakeModels):
+    """Hangs on the models named in `slow` (in a worker thread, like the real client)."""
+
+    def __init__(self, slow, answer="ok"):
+        super().__init__(answer)
+        self.slow = set(slow)
+
+    def generate_content(self, model, contents, config=None):
+        import time
+        self.calls.append(model)
+        if model in self.slow:
+            time.sleep(0.3)
+        return "late" if model in self.slow else self.outcomes[0]
+
+
+async def test_a_hanging_call_times_out_instead_of_waiting_forever():
+    from app.steps.model_call import ModelTimeout
+    models = SlowModels(slow={"fast"})
+    caller = caller_with(models, retry_delays=(0,), timeout=0.05)
+    with pytest.raises(ModelTimeout):
+        await caller.ask("fast", "hi")
+    assert models.calls == ["fast", "fast"]       # tried again once, then gave up
+
+
+async def test_the_backup_answers_when_the_main_model_hangs():
+    models = SlowModels(slow={"fast"}, answer="backup answer")
+    caller = caller_with(models, retry_delays=(), timeout=0.05)
+    assert await ask_with_backup(caller, "fast", "backup", "hi") == "backup answer"
+
+
+def test_timeouts_have_a_plain_message():
+    from app.steps.model_call import ModelTimeout
+    assert plain_error(ModelTimeout("fast")) == "Gemini took too long to answer. Please try again in a moment."
