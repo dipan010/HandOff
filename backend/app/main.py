@@ -155,6 +155,23 @@ async def get_sessions():
 
 # --- WebSocket Endpoint ---
 
+async def stop_session(session_id: str):
+    """Stop the task running for this session, if any, and close its tab adapter."""
+    session = active_sessions.pop(session_id, None)
+    if not session:
+        return
+    for key in ["agent_task", "live_task"]:
+        t = session.get(key)
+        if t and not t.done():
+            t.cancel()
+    browser = session.get("browser")
+    if browser:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Main WebSocket endpoint for real-time agent communication."""
@@ -163,6 +180,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     try:
         while True:
             data = await websocket.receive_text()
+            # The dashboard is clearly still here: make sure updates go to it.
+            ws_manager.active_connections[session_id] = websocket
             message = json.loads(data)
             msg_type = message.get("type", "")
 
@@ -178,6 +197,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 logger.info(
                     f"Task start: session={session_id}, mode={execution_mode}, task='{task}', url='{start_url}', patience={patience_mode}, gp_mode={grandparents_mode}, narration={narration_enabled}"
                 )
+
+                # Only one task per session: a new one replaces any still running,
+                # so two tasks never fight over the same tab.
+                if session_id in active_sessions:
+                    logger.info(f"Stopping the previous task: session={session_id}")
+                    await stop_session(session_id)
 
                 # Create session in Firestore
                 await create_session(session_id, task, start_url)
@@ -200,12 +225,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     continue
 
                 # Track session
-                active_sessions[session_id] = {
+                this_session = {
                     "browser": browser,
                     "task": task,
                     "agent_task": None,
                     "live_task": None,
                 }
+                active_sessions[session_id] = this_session
 
                 await ws_manager.send_status(
                     session_id, "started", "Agent is initializing..."
@@ -220,8 +246,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                     last_action_time_ref=last_action_time_ref,
                                     completion_text_ref=completion_text_ref,
                                     live_session_ref=live_session_ref):
-                    if narration_enabled:
-                        active_sessions[session_id]["live_task"] = asyncio.create_task(
+                    if narration_enabled and active_sessions.get(session_id) is this_session:
+                        this_session["live_task"] = asyncio.create_task(
                             run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
                         )
 
@@ -249,7 +275,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 active_sessions[session_id]["live_session_ref"] = live_session_ref
 
                 # Monitor agent completion
-                async def on_agent_done(t):
+                async def on_agent_done(t, this_session=this_session):
                     try:
                         await t
                     except asyncio.CancelledError:
@@ -261,8 +287,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         except Exception:
                             pass  # WebSocket may already be closed
                     finally:
-                        # Cancel live stream when agent is done
-                        session = active_sessions.pop(session_id, None)
+                        # Cancel live stream when agent is done. A newer task
+                        # may own the session by now; leave that one alone.
+                        session = this_session
+                        if active_sessions.get(session_id) is this_session:
+                            del active_sessions[session_id]
                         if session:
                             lt = session.get("live_task")
                             if lt and not lt.done():
@@ -291,35 +320,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             elif msg_type == "cancel_task":
                 logger.info(f"Task cancelled: session={session_id}")
-                if session_id in active_sessions:
-                    session = active_sessions[session_id]
-                    for key in ["agent_task", "live_task"]:
-                        t = session.get(key)
-                        if t and not t.done():
-                            t.cancel()
-                    browser = session.get("browser")
-                    if browser:
-                        await browser.close()
-                    del active_sessions[session_id]
+                await stop_session(session_id)
                 await ws_manager.send_status(session_id, "cancelled", "Task cancelled")
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: session={session_id}")
-        ws_manager.disconnect(session_id)
-        # Clean up session
-        if session_id in active_sessions:
-            session = active_sessions[session_id]
-            for key in ["agent_task", "live_task"]:
-                t = session.get(key)
-                if t and not t.done():
-                    t.cancel()
-            browser = session.get("browser")
-            if browser:
-                await browser.close()
-            del active_sessions[session_id]
+        ws_manager.disconnect(session_id, websocket)
+        # Clean up the session unless a newer dashboard connection took it over.
+        if session_id not in ws_manager.active_connections:
+            await stop_session(session_id)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        ws_manager.disconnect(session_id)
+        ws_manager.disconnect(session_id, websocket)
 
 @app.websocket("/ws/live_ext/{session_id}")
 async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -353,10 +365,10 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"Extension WebSocket disconnected: session={session_id}")
-        ws_manager.disconnect_extension(session_id)
+        ws_manager.disconnect_extension(session_id, websocket)
     except Exception as e:
         logger.error(f"Extension WebSocket error: {e}")
-        ws_manager.disconnect_extension(session_id)
+        ws_manager.disconnect_extension(session_id, websocket)
 
 if __name__ == "__main__":
     import uvicorn

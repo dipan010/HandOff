@@ -1,9 +1,11 @@
 """WebSocket connection manager and message routing."""
 
+import asyncio
 import json
 import logging
 from typing import Any
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +16,19 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
         self.extension_connections: dict[str, WebSocket] = {}
+        # One send at a time per socket: narration audio, screenshots and
+        # status updates come from different tasks, and overlapping sends
+        # on one socket fail.
+        self._send_locks: dict[int, asyncio.Lock] = {}
+
+    async def _send(self, ws: WebSocket, text: str):
+        lock = self._send_locks.setdefault(id(ws), asyncio.Lock())
+        async with lock:
+            await ws.send_text(text)
+
+    @staticmethod
+    def _closed(ws: WebSocket) -> bool:
+        return ws.client_state != WebSocketState.CONNECTED or ws.application_state != WebSocketState.CONNECTED
 
     async def connect(self, session_id: str, websocket: WebSocket):
         """Accept and register a WebSocket connection."""
@@ -21,10 +36,12 @@ class ConnectionManager:
         self.active_connections[session_id] = websocket
         logger.info(f"WebSocket connected: session={session_id}")
 
-    def disconnect(self, session_id: str):
-        """Remove a WebSocket connection."""
-        if session_id in self.active_connections:
+    def disconnect(self, session_id: str, websocket: WebSocket | None = None):
+        """Remove a WebSocket connection (only `websocket`, if given, not a newer one)."""
+        current = self.active_connections.get(session_id)
+        if current is not None and (websocket is None or current is websocket):
             del self.active_connections[session_id]
+            self._send_locks.pop(id(current), None)
             logger.info(f"WebSocket disconnected: session={session_id}")
 
     def get_connection(self, session_id: str) -> WebSocket | None:
@@ -37,41 +54,44 @@ class ConnectionManager:
         self.extension_connections[session_id] = websocket
         logger.info(f"Extension WebSocket connected: session={session_id}")
 
-    def disconnect_extension(self, session_id: str):
-        """Remove an Extension WebSocket connection."""
-        if session_id in self.extension_connections:
+    def disconnect_extension(self, session_id: str, websocket: WebSocket | None = None):
+        """Remove an Extension WebSocket connection (only `websocket`, if given)."""
+        current = self.extension_connections.get(session_id)
+        if current is not None and (websocket is None or current is websocket):
             del self.extension_connections[session_id]
+            self._send_locks.pop(id(current), None)
             logger.info(f"Extension WebSocket disconnected: session={session_id}")
 
     async def send_to_extension(self, session_id: str, message: dict[str, Any]):
         """Send a JSON command to the Chrome Extension."""
+        await self._send_extension(session_id, message)
+
+    async def _send_extension(self, session_id: str, message: dict):
         ws = self.extension_connections.get(session_id)
         if ws:
             try:
-                await ws.send_json(message)
+                await self._send(ws, json.dumps(message))
             except Exception as e:
-                logger.error(f"Failed to send to extension {session_id}: {e}")
-                self.disconnect_extension(session_id)
+                logger.error(f"Failed to send to extension {session_id}: {e!r}")
+                if self._closed(ws):
+                    self.disconnect_extension(session_id, ws)
 
     async def broadcast_to_extension(self, session_id: str, message: dict):
         """Broadcast a message as JSON text to the Chrome Extension."""
-        ws = self.extension_connections.get(session_id)
-        if ws:
-            try:
-                await ws.send_text(json.dumps(message))
-            except Exception as e:
-                logger.error(f"Failed to broadcast to extension {session_id}: {e}")
-                self.disconnect_extension(session_id)
+        await self._send_extension(session_id, message)
 
     async def send_message(self, session_id: str, message: dict[str, Any]):
         """Send a JSON message to a specific session."""
         ws = self.active_connections.get(session_id)
         if ws:
             try:
-                await ws.send_json(message)
+                await self._send(ws, json.dumps(message))
             except Exception as e:
-                logger.error(f"Failed to send to session {session_id}: {e}")
-                self.disconnect(session_id)
+                # One failed message must not cut the dashboard off for good:
+                # forget the socket only if it has really closed.
+                logger.error(f"Failed to send to session {session_id}: {e!r}")
+                if self._closed(ws):
+                    self.disconnect(session_id, ws)
 
     async def send_screenshot(self, session_id: str, screenshot_b64: str, step: int):
         """Send a screenshot update to the frontend."""
