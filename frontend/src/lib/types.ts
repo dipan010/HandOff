@@ -1,4 +1,4 @@
-export type AgentStatus = 'idle' | 'started' | 'navigating' | 'thinking' | 'executing' | 'confirming' | 'completed' | 'error' | 'timeout' | 'cancelled';
+export type AgentStatus = 'idle' | 'started' | 'navigating' | 'thinking' | 'waiting' | 'executing' | 'confirming' | 'completed' | 'error' | 'timeout' | 'cancelled';
 
 export interface Task {
     task: string;

@@ -8,7 +8,9 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Protocol
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable, Protocol
+from zoneinfo import ZoneInfo
 
 from google import genai
 from google.genai import types
@@ -40,6 +42,54 @@ class DailyLimitReached(RuntimeError):
     """Raised instead of waiting hours for a daily free-tier limit to reset."""
 
 
+# Gemini's daily limits reset at midnight Pacific time.
+RESET_ZONE = ZoneInfo("America/Los_Angeles")
+
+
+def next_daily_reset(now: datetime | None = None) -> datetime:
+    local = (now or datetime.now(timezone.utc)).astimezone(RESET_ZONE)
+    return (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+class UsedUpModels:
+    """Models that have hit their daily limit, until the limit resets.
+
+    Shared by every task in the running service, so a used-up model isn't
+    asked again on every turn.
+    """
+
+    def __init__(self):
+        self._until: dict[str, datetime] = {}
+
+    def mark(self, model: str, now: datetime | None = None) -> None:
+        self._until[model] = next_daily_reset(now)
+        logger.warning(f"{model} has used up today's requests; skipping it until {self._until[model]:%H:%M %Z}")
+
+    def is_used_up(self, model: str, now: datetime | None = None) -> bool:
+        until = self._until.get(model)
+        if until is None:
+            return False
+        if (now or datetime.now(timezone.utc)) >= until:
+            del self._until[model]
+            return False
+        return True
+
+    def all_used_up(self, models, now: datetime | None = None) -> bool:
+        names = [m for m in models if m]
+        return bool(names) and all(self.is_used_up(m, now) for m in names)
+
+    def clear(self) -> None:
+        self._until.clear()
+
+
+used_up = UsedUpModels()
+
+
+def reset_time_text(now: datetime | None = None) -> str:
+    """When the daily limit resets, in the computer's own time, e.g. '12:30 PM'."""
+    return next_daily_reset(now).astimezone().strftime("%I:%M %p").lstrip("0")
+
+
 class Caller(Protocol):
     async def ask(self, model: str, contents: Any, config: Any = None) -> Any:
         """Return the raw Gemini response for `contents`."""
@@ -59,10 +109,15 @@ def is_busy_error(err: Exception) -> bool:
     return any(m in text for m in BUSY_MARKERS)
 
 
+def used_up_message() -> str:
+    return (f"I've used today's free Gemini requests. Try again after {reset_time_text()}, "
+            "or add credit to the Gemini project (ai.studio/projects).")
+
+
 def plain_error(err: Exception) -> str:
     """Turn a Gemini error into a sentence a user can understand."""
     if isinstance(err, DailyLimitReached) or is_daily_limit(err):
-        return "Today's free Gemini limit is used up. Try again tomorrow, or add credit to the Google Cloud project."
+        return used_up_message()
     text = str(err).upper()
     if "402" in text or "PREPAYMENT" in text:
         return "The Gemini account has no credit left. Add prepaid credit in AI Studio (ai.studio/projects)."
@@ -78,11 +133,15 @@ def plain_error(err: Exception) -> str:
 class GeminiCaller:
     """The real thing: google-genai with retries on temporary overload."""
 
-    def __init__(self, api_key: str, retry_delays: tuple[float, ...] = RETRY_DELAYS):
+    def __init__(self, api_key: str, retry_delays: tuple[float, ...] = RETRY_DELAYS,
+                 on_wait: Callable[[float], Awaitable[None]] | None = None):
         self._client = genai.Client(api_key=api_key)
         self._retry_delays = retry_delays
+        self.on_wait = on_wait   # told before each wait, so the user sees "Waiting a moment"
 
     async def ask(self, model: str, contents: Any, config: Any = None) -> Any:
+        if used_up.is_used_up(model):
+            raise DailyLimitReached(f"{model} has used up today's requests.")
         for attempt in range(len(self._retry_delays) + 1):
             try:
                 return await asyncio.to_thread(
@@ -93,11 +152,17 @@ class GeminiCaller:
                 )
             except Exception as err:
                 if is_busy_error(err) and is_daily_limit(err):
+                    used_up.mark(model)
                     raise DailyLimitReached(str(err)) from err
                 if is_busy_error(err) and attempt < len(self._retry_delays):
                     asked = retry_delay_seconds(err)
                     delay = min(asked + 1, MAX_WAIT_FOR_LIMIT) if asked else self._retry_delays[attempt]
                     logger.warning(f"Gemini busy on {model}; retrying in {delay:.0f}s")
+                    if self.on_wait is not None:
+                        try:
+                            await self.on_wait(delay)
+                        except Exception:
+                            pass
                     await asyncio.sleep(delay)
                     continue
                 raise

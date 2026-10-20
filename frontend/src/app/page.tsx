@@ -49,7 +49,7 @@ export default function Home() {
     startTask(taskInput.trim(), urlInput.trim(), patienceMode, grandparentsMode, narrationEnabled);
   };
 
-  const isAgentActive = ["started", "navigating", "thinking", "executing", "confirming"].includes(status);
+  const isAgentActive = ["started", "navigating", "thinking", "waiting", "executing", "confirming"].includes(status);
 
   // Text-to-Speech for narration
   const { speak, stop } = useSpeech(narrationEnabled);

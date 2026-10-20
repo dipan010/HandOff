@@ -956,6 +956,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (isGP) {
                 const GP_COPY = {
                     "thinking": "Thinking about what to do next...",
+                    "waiting": "Just a moment, waiting my turn...",
                     "executing": "Working on it...",
                     "navigating": "Going to a new page...",
                     "confirming": "Double checking with you...",

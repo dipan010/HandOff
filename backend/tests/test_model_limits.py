@@ -1,0 +1,115 @@
+"""Gemini limits: a used-up model is skipped until the daily reset, waits are shown, and
+a task stops at once with a plain message when no model has requests left."""
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app.steps.model_call import (DailyLimitReached, GeminiCaller, ask_with_backup, next_daily_reset,
+                                  plain_error, used_up)
+
+DAILY = RuntimeError("429 RESOURCE_EXHAUSTED. {'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'}")
+PER_MINUTE = RuntimeError("429 RESOURCE_EXHAUSTED. Too many requests per minute")
+
+
+@pytest.fixture(autouse=True)
+def fresh_limits():
+    used_up.clear()
+    yield
+    used_up.clear()
+
+
+class FakeModels:
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def generate_content(self, model, contents, config=None):
+        self.calls.append(model)
+        outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def caller_with(models: FakeModels, **kwargs) -> GeminiCaller:
+    caller = GeminiCaller("test-key", **kwargs)
+    caller._client = SimpleNamespace(models=models)
+    return caller
+
+
+def test_daily_limits_reset_at_midnight_pacific():
+    # 02:00 UTC on 21 Oct is 19:00 on 20 Oct in California; the reset is 07:00 UTC on 21 Oct.
+    reset = next_daily_reset(datetime(2026, 10, 21, 2, 0, tzinfo=timezone.utc))
+    assert reset.astimezone(timezone.utc) == datetime(2026, 10, 21, 7, 0, tzinfo=timezone.utc)
+
+
+def test_a_used_up_model_comes_back_after_the_reset():
+    before = datetime(2026, 10, 21, 2, 0, tzinfo=timezone.utc)
+    used_up.mark("fast", now=before)
+    assert used_up.is_used_up("fast", now=before)
+    assert not used_up.is_used_up("fast", now=datetime(2026, 10, 21, 7, 1, tzinfo=timezone.utc))
+
+
+async def test_a_used_up_model_is_not_asked_again():
+    models = FakeModels(DAILY)
+    caller = caller_with(models)
+    with pytest.raises(DailyLimitReached):
+        await caller.ask("fast", "hi")
+    with pytest.raises(DailyLimitReached):
+        await caller.ask("fast", "hi again")
+    assert models.calls == ["fast"]          # the second ask never reached Gemini
+
+
+async def test_backup_answers_straight_away_when_the_main_model_is_used_up():
+    used_up.mark("fast")
+    models = FakeModels("backup answer")
+    caller = caller_with(models)
+    assert await ask_with_backup(caller, "fast", "backup", "hi") == "backup answer"
+    assert models.calls == ["backup"]
+
+
+async def test_waits_are_announced():
+    waits = []
+
+    async def on_wait(seconds):
+        waits.append(seconds)
+
+    models = FakeModels(PER_MINUTE, "ok")
+    caller = caller_with(models, retry_delays=(0,), on_wait=on_wait)
+    assert await caller.ask("fast", "hi") == "ok"
+    assert waits == [0]
+
+
+def test_used_up_message_says_when_to_try_again():
+    message = plain_error(DailyLimitReached("fast"))
+    assert message.startswith("I've used today's free Gemini requests. Try again after ")
+    assert "ai.studio/projects" in message
+
+
+async def test_task_stops_at_once_when_every_model_is_used_up(monkeypatch):
+    from tests.fakes import FakeCaller, FakePageBrowser, page
+    from tests.test_page_step import NO_WAIT, cfg, sent
+    from app.steps import run as run_module
+    from tests.fakes import FakeUI
+
+    async def nothing(*a, **k):
+        return None
+
+    monkeypatch.setattr(run_module, "update_session_state", nothing)
+    for name in ("fast", "strong", "backup"):
+        used_up.mark(name)
+    opened = []
+
+    async def open_browser():
+        opened.append(True)
+
+    browser = FakePageBrowser([page("about:blank")])
+    caller = FakeCaller()
+    ui = FakeUI()
+    await run_module.run_task("s1", "find train times to Delhi", "", browser, caller=caller, ui=ui,
+                              cfg=cfg(), timing=NO_WAIT, open_browser=open_browser)
+    assert [args[0] for args in sent(ui, "send_error")][0].startswith("I've used today's free Gemini requests")
+    assert opened == [] and browser.actions == []
+    assert caller.count("plan") == 0 and caller.count("action") == 0

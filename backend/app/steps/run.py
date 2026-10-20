@@ -29,7 +29,7 @@ from app.firestore_client import update_session_state
 from app.steps.check import ScreenState, changed, is_step_done
 from app.steps.describe import action_in_plain_words
 from app.steps.finish import finish_task
-from app.steps.model_call import Caller, GeminiCaller, plain_error
+from app.steps.model_call import Caller, GeminiCaller, plain_error, used_up, used_up_message
 from app.steps.page_step import do_step_by_page
 from app.steps.plan import Step, make_plan, revise_plan
 from app.steps.safety import SignInGuard, pause_and_wait
@@ -436,10 +436,24 @@ async def run_task(
         live_session_ref=live_session_ref,
     )
 
+    if isinstance(run.caller, GeminiCaller) and run.caller.on_wait is None:
+        async def waiting(seconds: float) -> None:
+            await run.status("waiting", "Just a moment, Gemini asked me to wait..." if run.grandparents_mode
+                             else f"Waiting a moment for Gemini ({seconds:.0f}s)...")
+        run.caller.on_wait = waiting
+
     sorted_request = await sort_request(task, start_url, run.caller, cfg.SORT_MODEL, cfg.BACKUP_MODEL)
     if sorted_request.kind == "chat":
         await ui.send_quick_reply(session_id, sorted_request.reply)
         await run.finish(sorted_request.reply, "Quick reply")
+        return
+
+    # Every model that could do the task has used up today's requests:
+    # say so now instead of opening a tab and failing step after step.
+    if used_up.all_used_up([cfg.FAST_MODEL, cfg.STRONG_MODEL, cfg.BACKUP_MODEL]):
+        message = used_up_message()
+        await ui.send_error(session_id, message)
+        await update_session_state(session_id, "error", "Daily limit used up")
         return
 
     if open_browser is not None:
