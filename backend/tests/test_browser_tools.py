@@ -120,3 +120,23 @@ def test_each_step_is_offered_the_tools_that_fit_it():
     assert "pull_list" in tools_for_step("Find the cheapest flight in the results")
     assert "fill_form" in tools_for_step("Enter the travel dates and passenger details")
     assert len(reading) < len(ALL_TOOLS)
+
+
+async def test_fill_form_types_into_pickers_that_only_list_matches_after_typing():
+    picker = page("https://www.makemytrip.com/", ("dropdown", "From"))
+    calls = []
+
+    class Picker(FakePageBrowser):
+        async def execute_action(self, name, args):
+            if name == "choose_option":
+                calls.append(args)
+                typed = any(n == "type_text" for n, _ in self.actions)
+                self.actions.append((name, args))
+                return {"success": True, "chosen": "Kolkata, India"} if typed else {"success": False, "detail": "No option"}
+            return await super().execute_action(name, args)
+
+    browser = Picker([picker], frozen=True)
+    result = await BrowserTools(browser, settle_seconds=0).run("fill_form", {"fields": [{"label": "From", "value": "Kolkata"}]})
+    assert [n for n, _ in browser.actions] == ["choose_option", "type_text", "choose_option"]
+    assert calls[1] == {"text": "Kolkata"}
+    assert result.ok and "From = Kolkata, India" in result.message

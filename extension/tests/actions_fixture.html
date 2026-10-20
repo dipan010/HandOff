@@ -9,11 +9,29 @@
     <button id="go" onclick="this.dataset.clicked = 'yes'">Search trains</button>
     <div role="combobox" id="city" aria-label="City" onclick="document.getElementById('list').hidden = false">Pick a city</div>
     <ul id="list" role="listbox" hidden><li role="option">Mumbai Central</li><li role="option" onclick="document.getElementById('city').textContent = 'Pune'">Pune Junction</li></ul>
+    <input role="combobox" id="from" aria-label="From city" autocomplete="off">
+    <ul id="suggest" role="listbox"></ul>
   </main>
   <pre id="out"></pre>
   <script>
     // Stand-in for the extension API so content_script.js can load in a normal page.
     window.chrome = { runtime: { onMessage: { addListener() {} }, sendMessage() {} } };
+  </script>
+  <script>
+    // A picker that only lists matching cities after you type, like MakeMyTrip's.
+    const CITIES = ["Kolkata, India", "Kochi, India", "Delhi, India"];
+    document.getElementById("from").addEventListener("input", (e) => {
+      const q = e.target.value.toLowerCase();
+      const list = document.getElementById("suggest");
+      list.innerHTML = "";
+      for (const c of CITIES.filter((c) => q && c.toLowerCase().startsWith(q))) {
+        const li = document.createElement("li");
+        li.setAttribute("role", "option");
+        li.textContent = c;
+        li.onclick = () => { e.target.value = c; e.target.dataset.picked = c; list.innerHTML = ""; };
+        list.appendChild(li);
+      }
+    });
   </script>
   <script src="../page_map.js"></script>
   <script src="../content_script.js"></script>
@@ -29,6 +47,8 @@
         click: await run("click_element", { element_id: ids["Search trains"] }),
         custom: await run("choose_option", { element_id: ids["City"], text: "Pune" }),
         stale: await run("click_element", { element_id: 9999 }),
+        pickerTyped: await run("type_text", { element_id: ids["From city"], text: "Kolk", submit: false }),
+        picker: await run("choose_option", { text: "Kolkata" }),
         map: await run("page_map"),
       };
       const state = {
@@ -37,6 +57,7 @@
         student: document.getElementById("student").checked,
         clicked: document.getElementById("go").dataset.clicked || "no",
         city: document.getElementById("city").textContent,
+        from: document.getElementById("from").dataset.picked || "",
       };
       document.getElementById("out").textContent = JSON.stringify({ results, state });
     })();

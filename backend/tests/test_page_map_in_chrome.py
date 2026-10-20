@@ -102,6 +102,7 @@ def test_actions_by_element_number_change_the_page(actions):
     assert state["student"] is False
     assert state["clicked"] == "yes"
     assert state["city"] == "Pune"
+    assert state["from"] == "Kolkata, India"     # typed, then picked the suggestion
 
 
 def test_action_replies(actions):
@@ -130,6 +131,7 @@ def test_search_results_skip_ads_and_unwrap_redirects():
         "https://en.m.wikipedia.org/wiki/Alan_Turing",
         "https://www.britannica.com/biography/Alan-Turing",
         "https://www.turing.ac.uk/",
+        "https://www.google.com/goto?url=CAESZAHrOzAV574Okl2f",
     ]
     assert results[0]["title"] == "Alan Turing - Wikipedia"
     assert "English mathematician" in results[0]["snippet"]

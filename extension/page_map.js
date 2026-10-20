@@ -8,7 +8,10 @@
 // for testing. Exposes window.handoffPage.
 
 (function () {
-    if (window.handoffPage) return;
+    // Bump when the page reader changes, so a tab still holding an older copy
+    // (from before the extension was reloaded) gets the new one.
+    const VERSION = 2;
+    if (window.handoffPage && window.handoffPage.version >= VERSION) return;
 
     const ID_ATTR = "data-handoff-id";
     const MAX_ELEMENTS = 150;
@@ -27,7 +30,8 @@
     // Fields whose value must never leave the page.
     const SECRET_NAME = /pass(word)?|pwd|card|cc-?(num|number|csc|exp)|cvv|cvc|security.?code|\bpin\b|otp|one.?time/i;
 
-    let nextId = 1;
+    // Carry on after numbers an older copy already gave out.
+    let nextId = 1 + Math.max(0, ...[...document.querySelectorAll(`[${ID_ATTR}]`)].map((el) => Number(el.getAttribute(ID_ATTR)) || 0));
 
     function clean(text, max = MAX_LABEL) {
         const t = (text || "").replace(/\s+/g, " ").trim();
@@ -269,7 +273,7 @@
     function realAddress(href) {
         let url;
         try {
-            url = new URL(href, location.href);
+            url = new URL(href, document.baseURI);
         } catch (e) {
             return "";
         }
@@ -280,6 +284,19 @@
             if (/^https?:\/\//.test(value)) return value;
         }
         return url.protocol.startsWith("http") ? url.href : "";
+    }
+
+    // A search site's own "go to this result" link whose target is coded
+    // (Google's /goto?url=...). Opening it still lands on the result.
+    const REDIRECT_PATH = /^\/(url|goto|ck\/a|l)\/?$/;
+
+    function isRedirect(url) {
+        try {
+            const u = new URL(url);
+            return SEARCH_SITE.test(u.hostname) && REDIRECT_PATH.test(u.pathname);
+        } catch (e) {
+            return false;
+        }
     }
 
     function sameSite(a, b) {
@@ -310,7 +327,9 @@
             const rect = link.getBoundingClientRect();
             if (rect.width < 2 || rect.height < 2) continue;
             const url = realAddress(link.getAttribute("href"));
-            if (!url || sameSite(url, location.href) || SEARCH_SITE.test(new URL(url).hostname) || seen.has(url)) continue;
+            if (!url || seen.has(url)) continue;
+            const internal = sameSite(url, location.href) || SEARCH_SITE.test(new URL(url).hostname);
+            if (internal && !isRedirect(url)) continue;
             const title = clean(heading.innerText || heading.textContent || link.textContent, 120);
             if (!title) continue;
             seen.add(url);
@@ -443,5 +462,5 @@
         return null;
     }
 
-    window.handoffPage = { map, readText, searchResults, pullItems, element, ID_ATTR };
+    window.handoffPage = { version: VERSION, map, readText, searchResults, pullItems, element, ID_ATTR };
 })();

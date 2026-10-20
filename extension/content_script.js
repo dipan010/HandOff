@@ -1,7 +1,11 @@
 (function() {
 // Prevents re-injection: on SPA navigations or duplicate inject, skip silently (no throw).
-if (window.__udaaContentScriptLoaded) return;
-window.__udaaContentScriptLoaded = true;
+// A copy left from before the extension was reloaded can no longer talk to
+// the extension, so in that case load again.
+if (window.__udaaContentScriptLoaded && window.__udaaContentScriptLoaded()) return;
+window.__udaaContentScriptLoaded = () => {
+    try { return !!chrome.runtime.id; } catch (e) { return false; }
+};
 
 window.udaaLastClickedElement = null;
 window._udaaLastClickX = null;

@@ -4,6 +4,7 @@ Every tool works on the element numbers from the page map, except `click_at`,
 which is the screenshot fallback for things the page map can't see.
 """
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -131,7 +132,11 @@ def _reply_detail(reply, fallback: str) -> str:
 
 
 def _results_text(results: list[dict], start: int = 1) -> str:
-    return "\n".join(f"{i}. {r.get('title', '')} ({r.get('url', '')})" for i, r in enumerate(results, start=start))
+    lines = []
+    for i, r in enumerate(results, start=start):
+        snippet = (r.get("snippet") or "")[:120]
+        lines.append(f"{i}. {r.get('title', '')}" + (f" — {snippet}" if snippet else "") + f" ({r.get('url', '')})")
+    return "\n".join(lines)
 
 
 YES = {"yes", "true", "on", "1", "tick", "ticked", "checked", "y"}
@@ -164,9 +169,10 @@ def items_text(found: dict, max_chars: int = 6000) -> str:
 class BrowserTools:
     """Carries out the model's tool calls through the extension."""
 
-    def __init__(self, browser: BrowserAdapter, search_engine: str = "google"):
+    def __init__(self, browser: BrowserAdapter, search_engine: str = "google", settle_seconds: float = 0.6):
         self.browser = browser
         self.search_engine = search_engine
+        self.settle_seconds = settle_seconds   # time for suggestions to appear after typing
         self.last_page: dict | None = None   # the page map the model is looking at
 
     def _is_secret(self, element_id) -> bool:
@@ -177,6 +183,20 @@ class BrowserTools:
         reply = await self.browser.execute_action("navigate", {"url": url})
         ok = reply is True or (isinstance(reply, dict) and reply.get("success") is not False)
         return ToolResult(ok, f"Opening {url}." if ok else _reply_detail(reply, f"Could not open {url}."), data=reply)
+
+    async def choose_or_type(self, el_id, value: str):
+        """Pick from a dropdown. Many city and station pickers only list matches
+        after you type, so if the option isn't there, type and pick again."""
+        reply = await self.browser.execute_action("choose_option", {"element_id": el_id, "text": value})
+        if _reply_ok(reply):
+            return reply
+        typed = await self.browser.execute_action("type_text", {"element_id": el_id, "text": value, "submit": False})
+        if not (_reply_ok(typed) or typed is True):
+            return reply
+        await asyncio.sleep(self.settle_seconds)
+        picked = await self.browser.execute_action("choose_option", {"text": value})
+        # Typing alone is enough for a box that just takes text.
+        return picked if _reply_ok(picked) else {"success": True}
 
     async def fill_form(self, fields: list) -> ToolResult:
         page = await self.page_map() or self.last_page
@@ -207,7 +227,7 @@ class BrowserTools:
                     continue
                 reply = await self.browser.execute_action("set_checked", {"element_id": el_id, "checked": ticked})
             elif role == "dropdown":
-                reply = await self.browser.execute_action("choose_option", {"element_id": el_id, "text": value})
+                reply = await self.choose_or_type(el_id, value)
             else:
                 reply = await self.browser.execute_action("type_text", {"element_id": el_id, "text": value, "submit": False})
             if _reply_ok(reply) or reply is True:
