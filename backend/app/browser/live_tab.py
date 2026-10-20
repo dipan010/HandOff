@@ -22,6 +22,8 @@ class LiveBrowserAdapter(BrowserAdapter):
         # may be waiting for a reply at a time.
         self._action_lock = asyncio.Lock()
         self._page = None  # no page object: the extension does the work
+        # How long an action waits for a reconnecting extension before failing.
+        self.reconnect_wait = 3.0
         # Set when the extension sees the user click or type in the work tab.
         self.user_input_seen = False
 
@@ -35,6 +37,20 @@ class LiveBrowserAdapter(BrowserAdapter):
         # Fall back to the address sent with the latest screen frame.
         return url if isinstance(url, str) and url else self._latest_url
 
+
+    def extension_connected(self) -> bool:
+        from app.websocket import manager as ws_manager
+        return self.session_id in ws_manager.extension_connections
+
+    async def wait_for_extension(self, timeout: float) -> bool:
+        """True once the Chrome extension has connected for this session."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not self.extension_connected():
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+        return True
 
     async def launch(self, start_url: str = ""):
         """Launch a new tab in the user's existing default OS browser."""
@@ -103,6 +119,12 @@ class LiveBrowserAdapter(BrowserAdapter):
         """Send an action to the extension and wait for the result."""
         async with self._action_lock:
             from app.websocket import manager as ws_manager
+
+            # A short gap (the extension reconnecting) is waited out; no
+            # extension at all fails at once instead of after a long timeout.
+            if not await self.wait_for_extension(timeout=self.reconnect_wait):
+                return {"action": action_name, "success": False,
+                        "detail": "The HandOff extension isn't connected to this tab."}
 
             # Extension is stateless, we just send standard actions
             ext_msg = {

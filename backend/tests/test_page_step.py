@@ -6,7 +6,8 @@ from app.steps.page_step import trim_page_views
 from app.steps.run import Timing, run_task
 from tests.fakes import FakeCaller, FakePageBrowser, FakeUI, action_reply, calls_reply, page
 
-NO_WAIT = Timing(after_action=0, after_page_load=0, preview=0, speak_wait=0, no_frame_wait=0)
+NO_WAIT = Timing(after_action=0, after_page_load=0, preview=0, speak_wait=0, no_frame_wait=0,
+                 settle_min=0, settle_interval=0, settle_max=0)
 
 SEARCH_PAGE = page("https://www.youtube.com/", ("search box", "Search"), ("button", "Search"), ("link", "Home"))
 RESULTS_PAGE = page("https://www.youtube.com/results?search_query=lofi",

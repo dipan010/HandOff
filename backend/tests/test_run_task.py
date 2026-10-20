@@ -5,7 +5,8 @@ from app.steps import run as run_module
 from app.steps.run import Timing, run_task
 from tests.fakes import FakeBrowser, FakeCaller, FakeUI, action_reply
 
-NO_WAIT = Timing(after_action=0, after_page_load=0, preview=0, speak_wait=0, no_frame_wait=0)
+NO_WAIT = Timing(after_action=0, after_page_load=0, preview=0, speak_wait=0, no_frame_wait=0,
+                 settle_min=0, settle_interval=0, settle_max=0)
 
 
 @pytest.fixture(autouse=True)

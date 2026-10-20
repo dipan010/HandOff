@@ -118,10 +118,23 @@ class Timing:
     preview: float = 0.8
     speak_wait: float = 4.0
     no_frame_wait: float = 1.0
+    # Waiting for the page to settle after actions: at least settle_min,
+    # then until two page views in a row match, at most settle_max.
+    settle_min: float = 0.3
+    settle_interval: float = 0.4
+    settle_max: float = 5.0
 
     @classmethod
     def for_mode(cls, patience_mode: bool) -> "Timing":
-        return cls(after_action=2.0, after_page_load=4.0) if patience_mode else cls(after_action=0.5, after_page_load=1.0)
+        if patience_mode:
+            return cls(after_action=2.0, after_page_load=4.0, settle_min=2.0, settle_max=12.0)
+        return cls(after_action=0.5, after_page_load=1.0)
+
+
+EXTENSION_MISSING = (
+    "The HandOff Chrome extension isn't connected. In Chrome, open chrome://extensions, "
+    "make sure HandOff is switched on (click its reload button if it is), then try again."
+)
 
 
 @dataclass
@@ -458,6 +471,14 @@ async def run_task(
 
     if open_browser is not None:
         await open_browser()
+    # Nothing works until the Chrome extension has connected to this session.
+    wait_for_extension = getattr(browser, "wait_for_extension", None)
+    if wait_for_extension is not None:
+        await run.status("waiting", "Waiting for the HandOff extension...")
+        if not await wait_for_extension(cfg.EXTENSION_WAIT_SECONDS):
+            await ui.send_error(session_id, EXTENSION_MISSING)
+            await update_session_state(session_id, "error", "Extension not connected")
+            return
     await run.say_on_it()
     plan_model = cfg.STRONG_MODEL if sorted_request.effort == "hard" else cfg.FAST_MODEL
     run.action_model = plan_model

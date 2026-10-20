@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     MAX_STEP_RETRIES: int = 3       # failed attempts on one step before re-planning
     MAX_PLAN_REVISIONS: int = 2     # re-plans allowed per task
     KEEP_SCREENSHOTS: int = 3       # screenshots kept in the action model's history
+    EXTENSION_WAIT_SECONDS: float = 15   # how long a task waits for the Chrome extension to connect
     DASHBOARD_GRACE_SECONDS: float = 30  # a task keeps running this long after its dashboard disconnects
     MODEL_CALL_TIMEOUT: float = 45  # seconds one Gemini call may take before it is tried again
 

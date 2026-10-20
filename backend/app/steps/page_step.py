@@ -12,6 +12,7 @@ needed.
 
 import asyncio
 import logging
+import re
 import time
 
 from google.genai import types
@@ -98,6 +99,35 @@ def trim_images(contents: list, keep: int) -> list:
     return list(reversed(out))
 
 
+STILL_LOADING = re.compile(r"^\s*(loading|please wait|fetching|searching)\b", re.I)
+
+
+def still_loading(page: dict | None) -> bool:
+    return any(STILL_LOADING.match(e.get("label") or "") for e in (page or {}).get("elements") or [])
+
+
+async def settled_page(tools: BrowserTools, timing) -> dict | None:
+    """The page view once the page has stopped changing after an action.
+
+    Waits at least `settle_min`, then reads the page until two reads in a row
+    match, for at most `settle_max`. A fast page is read again almost at once;
+    a slow one gets the time it needs, instead of one fixed delay for both.
+    """
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(timing.settle_min)
+    deadline = loop.time() + timing.settle_max
+    page = await tools.page_map()
+    while True:
+        if loop.time() >= deadline:
+            return page
+        await asyncio.sleep(timing.settle_interval)
+        again = await tools.page_map()
+        if (again is not None and page is not None and not still_loading(again)
+                and structure_hash(again) == structure_hash(page)):
+            return again
+        page = again
+
+
 def _forget_user_input(run) -> None:
     """After HandOff's own pauses the user was meant to use the page; that isn't a takeover."""
     if getattr(run.browser, "user_input_seen", False):
@@ -152,6 +182,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
     last_results: list[dict] = []
     is_last = step is plan[-1]
     approved_next = False                    # the user just said yes to an ask_before
+    settled: dict | None = None              # page view read while waiting for the page to settle
 
     while True:
         if run.actions_used >= cfg.MAX_AGENT_TURNS:
@@ -175,7 +206,8 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
 
         await run.status("thinking", f"Step {step.number}: {step.title}")
 
-        page = await tools.page_map()
+        page = settled if settled is not None else await tools.page_map()
+        settled = None
         tools.last_page = page
         shot = await run.screenshot()
         if shot:
@@ -274,8 +306,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 # turn may have changed it since the page view was taken.
                 check_page, check_shot, check_url = page, (shot if add_shot or page is None else None), url
                 if names:
-                    await asyncio.sleep(run.timing.after_page_load)
-                    check_page = await tools.page_map() or page
+                    check_page = await settled_page(tools, run.timing) or page
                     check_url = (check_page or {}).get("url") or await run.url() or url
                     if check_shot is not None or check_page is None:
                         check_shot = await run.screenshot()
@@ -399,6 +430,6 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             return outcome
 
         if names:
-            await asyncio.sleep(run.timing.after_page_load)
+            settled = await settled_page(tools, run.timing)
             run.last_action_finish = time.time()
             before, last_names, last_results = page_before, names, results
