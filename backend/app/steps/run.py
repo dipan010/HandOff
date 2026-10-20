@@ -275,7 +275,7 @@ class TaskRun:
             if marker or (not calls and nudges >= 1):
                 check = await is_step_done(
                     self.task, step, shot, await self.url(),
-                    self.caller, cfg.FAST_MODEL, cfg.BACKUP_MODEL,
+                    self.caller, cfg.CHECK_MODEL, cfg.BACKUP_MODEL,
                 )
                 if check.ok:
                     kind = "task_done" if marker and marker[0] == "task" else "done"

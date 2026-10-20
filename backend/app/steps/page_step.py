@@ -244,7 +244,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                     page_text += "\nPage text:\n" + read
                 check = await is_step_done(
                     run.task, step, shot if add_shot or page is None else None, url,
-                    run.caller, cfg.FAST_MODEL, cfg.BACKUP_MODEL, page_text=page_text,
+                    run.caller, cfg.CHECK_MODEL, cfg.BACKUP_MODEL, page_text=page_text,
                 )
                 if not check.ok:
                     failures += 1

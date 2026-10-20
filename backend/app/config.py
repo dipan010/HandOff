@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     FAST_MODEL: str = "gemini-3.5-flash"
     STRONG_MODEL: str = "gemini-3.1-pro-preview"
     BACKUP_MODEL: str = "gemini-2.5-flash"
+    # Checks whether a step is finished. A different model from FAST_MODEL
+    # spreads the work across separate per-model rate limits on the free tier.
+    CHECK_MODEL: str = "gemini-3.5-flash-lite"
 
     # "steps" = plan, do, check (default). "classic" = the original single loop.
     TASK_FLOW: str = "steps"
