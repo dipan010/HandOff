@@ -3,6 +3,7 @@ interface ScreenViewProps {
     step: number;
 }
 
+import { pictureSrc } from '../lib/picture';
 import { MonitorPlay, EyeOff } from 'lucide-react';
 
 export function ScreenView({ screenshot, step }: ScreenViewProps) {
@@ -23,7 +24,7 @@ export function ScreenView({ screenshot, step }: ScreenViewProps) {
             <div className="screen-container">
                 {screenshot ? (
                     <img
-                        src={`data:image/png;base64,${screenshot}`}
+                        src={pictureSrc(screenshot)}
                         alt={`Browser screenshot at step ${step}`}
                     />
                 ) : (

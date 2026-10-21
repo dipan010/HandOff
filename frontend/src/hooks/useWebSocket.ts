@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { AgentStatus, AgentAction, SafetyConfirmRequest, PausePromptData } from '../lib/types';
+import { AgentStatus, AgentAction, SafetyConfirmRequest, PausePromptData, PlanStep } from '../lib/types';
 
 let _audioCtx: AudioContext | null = null;
 function getAudioContext(sampleRate = 24000): AudioContext {
@@ -23,9 +23,11 @@ interface UseWebSocketReturn {
     actions: { step: number; data: AgentAction }[];
     narration: string;
     actionPreview: string;
+    narrationSpeak: boolean;   // false: the narrator voice is already saying it
     safetyRequest: SafetyConfirmRequest | null;
     pausePrompt: PausePromptData | null;
     taskSummary: string | null;
+    planSteps: PlanStep[];
     error: string | null;
     startTask: (task: string, start_url: string, patienceMode?: boolean, grandparentsMode?: boolean, narrationEnabled?: boolean) => void;
     sendSafetyResponse: (request_id: string, approved: boolean, userInput?: string) => void;
@@ -41,9 +43,11 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
     const [actions, setActions] = useState<{ step: number; data: AgentAction }[]>([]);
     const [narration, setNarration] = useState('');
     const [actionPreview, setActionPreview] = useState('');
+    const [narrationSpeak, setNarrationSpeak] = useState(true);
     const [safetyRequest, setSafetyRequest] = useState<SafetyConfirmRequest | null>(null);
     const [pausePrompt, setPausePrompt] = useState<PausePromptData | null>(null);
     const [taskSummary, setTaskSummary] = useState<string | null>(null);
+    const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
     const [error, setError] = useState<string | null>(null);
 
     const wsRef = useRef<WebSocket | null>(null);
@@ -92,6 +96,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
             setSafetyRequest(null);
             setPausePrompt(null);
             setTaskSummary(null);
+            setPlanSteps([]);
             setError(null);
         }
 
@@ -129,6 +134,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
                         break;
 
                     case 'narration':
+                        setNarrationSpeak(data.speak !== false);
                         setNarration(data.text);
                         break;
 
@@ -151,6 +157,31 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
                         setStatus('confirming');
                         setStatusDetail('Waiting for your input');
                         setPausePrompt(data);
+                        break;
+
+                    case 'ack':
+                        setStatusDetail(data.text);
+                        setNarrationSpeak(data.speak !== false);
+                        setNarration(data.text);
+                        break;
+
+                    case 'quick_reply':
+                        setNarrationSpeak(true);
+                        setNarration(data.text);
+                        break;
+
+                    case 'plan':
+                        // A re-plan resends finished steps too; keep their state.
+                        setPlanSteps((prev) => (data.steps as PlanStep[]).map((s) => {
+                            const old = prev.find((p) => p.number === s.number && p.title === s.title);
+                            return { ...s, state: old?.state ?? 'waiting', detail: old?.detail };
+                        }));
+                        break;
+
+                    case 'step_update':
+                        setPlanSteps((prev) => prev.map((s) =>
+                            s.number === data.number ? { ...s, state: data.state, detail: data.detail || s.detail } : s
+                        ));
                         break;
 
                     case 'task_complete':
@@ -277,6 +308,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         setSafetyRequest(null);
         setPausePrompt(null);
         setTaskSummary(null);
+        setPlanSteps([]);
         setError(null);
 
         wsRef.current.send(JSON.stringify({
@@ -320,9 +352,11 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         actions,
         narration,
         actionPreview,
+        narrationSpeak,
         safetyRequest,
         pausePrompt,
         taskSummary,
+        planSteps,
         error,
         startTask,
         sendSafetyResponse,

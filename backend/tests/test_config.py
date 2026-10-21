@@ -9,7 +9,7 @@ class TestSettings:
         assert s.MAX_AGENT_TURNS == 25
         assert s.SCREEN_WIDTH == 1440
         assert s.SCREEN_HEIGHT == 900
-        assert s.LIVE_MODEL == "gemini-2.0-flash-exp"
+        assert s.LIVE_MODEL == "gemini-2.5-flash-native-audio-preview-12-2025"
         assert s.COMPUTER_USE_MODEL.startswith("gemini-2.5-computer-use")
         assert s.USE_FIRESTORE is False  # default off, opt-in
         assert s.AGENT_TIMEOUT_SECONDS == 300

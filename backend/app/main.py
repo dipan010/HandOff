@@ -1,10 +1,5 @@
 """FastAPI application — main entrypoint."""
 
-import sys
-if sys.platform == "win32":
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 import asyncio
 import json
 import logging
@@ -20,8 +15,9 @@ from google.genai import types
 from app.config import get_settings
 from app.guardrails import validate_task, validate_url, MAX_TASK_LENGTH
 from app.websocket import manager as ws_manager
-from app.browser_adapters.base_adapter import BrowserAdapter
+from app.browser.base import BrowserAdapter
 from app.computer_use import run_agent_loop
+from app.steps.run import run_task
 from app.live_stream import run_live_stream
 from app.firestore_client import create_session, get_session, list_sessions
 
@@ -64,7 +60,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Universal Digital Accessibility Agent",
-    description="AI agent that autonomously navigates digital interfaces",
+    description="Assistant that operates websites and apps for people who find them hard to use",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -173,6 +169,52 @@ async def get_sessions():
 
 # --- WebSocket Endpoint ---
 
+# How long a task keeps running after its dashboard disconnects (a reload or a
+# short network drop). A dashboard that reconnects in time picks the task up again.
+DASHBOARD_GRACE_SECONDS = settings.DASHBOARD_GRACE_SECONDS
+_pending_stops: dict[str, asyncio.Task] = {}
+
+
+def dashboard_gone(session_id: str):
+    """Stop the task only if the dashboard hasn't come back after the grace period."""
+    if session_id not in active_sessions:
+        return
+
+    async def stop_later():
+        await asyncio.sleep(DASHBOARD_GRACE_SECONDS)
+        _pending_stops.pop(session_id, None)
+        if session_id not in ws_manager.active_connections:
+            logger.info(f"Dashboard didn't come back; stopping the task: session={session_id}")
+            await stop_session(session_id)
+
+    dashboard_back(session_id)
+    _pending_stops[session_id] = asyncio.create_task(stop_later())
+
+
+def dashboard_back(session_id: str):
+    pending = _pending_stops.pop(session_id, None)
+    if pending and not pending.done():
+        pending.cancel()
+        logger.info(f"Dashboard came back; the task keeps running: session={session_id}")
+
+
+async def stop_session(session_id: str):
+    """Stop the task running for this session, if any, and close its tab adapter."""
+    session = active_sessions.pop(session_id, None)
+    if not session:
+        return
+    for key in ["agent_task", "live_task"]:
+        t = session.get(key)
+        if t and not t.done():
+            t.cancel()
+    browser = session.get("browser")
+    if browser:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Main WebSocket endpoint for real-time agent communication."""
@@ -186,10 +228,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             await websocket.close(code=4001)
             return
     await ws_manager.connect(session_id, websocket)
+    dashboard_back(session_id)
 
     try:
         while True:
             data = await websocket.receive_text()
+            # The dashboard is clearly still here: make sure updates go to it.
+            ws_manager.active_connections[session_id] = websocket
             try:
                 message = json.loads(data)
             except json.JSONDecodeError:
@@ -229,28 +274,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     f"Task start: session={session_id}, mode={execution_mode}, task='{task}', url='{start_url}', patience={patience_mode}, gp_mode={grandparents_mode}, narration={narration_enabled}"
                 )
 
+                # Only one task per session: a new one replaces any still running,
+                # so two tasks never fight over the same tab.
+                if session_id in active_sessions:
+                    logger.info(f"Stopping the previous task: session={session_id}")
+                    await stop_session(session_id)
+
                 # Create session in Firestore
                 await create_session(session_id, task, start_url)
 
-                # Clean up any existing session for this ID before starting a new one
-                if session_id in active_sessions:
-                    old = active_sessions.pop(session_id)
-                    for key in ["agent_task", "live_task"]:
-                        t = old.get(key)
-                        if t and not t.done():
-                            t.cancel()
-                    old_browser = old.get("browser")
-                    if old_browser:
-                        try:
-                            await old_browser.close()
-                        except Exception:
-                            pass
+                use_steps = settings.TASK_FLOW != "classic"
 
-                # Initialize live browser adapter
+                # Initialize live browser adapter. The steps flow opens the tab
+                # later, only once it knows the request needs the browser.
                 try:
-                    from app.browser_adapters.live_browser_adapter import LiveBrowserAdapter
+                    from app.browser.live_tab import LiveBrowserAdapter
                     browser = LiveBrowserAdapter(session_id)
-                    await browser.launch(start_url=start_url)
+                    if not use_steps:
+                        await browser.launch(start_url=start_url)
                 except Exception as launch_err:
                     logger.error(f"Browser launch failed: {launch_err}")
                     await ws_manager.send_error(
@@ -260,12 +301,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     continue
 
                 # Track session
-                active_sessions[session_id] = {
+                this_session = {
                     "browser": browser,
                     "task": task,
                     "agent_task": None,
                     "live_task": None,
                 }
+                active_sessions[session_id] = this_session
 
                 await ws_manager.send_status(
                     session_id, "started", "Agent is initializing..."
@@ -275,28 +317,43 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 last_action_time_ref = [0.0]
                 completion_text_ref = [None]
                 live_session_ref = [None]  # holds the live session so agent loop can push into it
-                # Bounded queue: orchestrator pushes its screenshots here so the
-                # live stream always narrates from the same frame the agent is analysing.
-                screenshot_queue: asyncio.Queue = asyncio.Queue(maxsize=3)
 
-                agent_task = asyncio.create_task(
-                    run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref, screenshot_queue)
-                )
+                def start_narration(browser=browser, task=task, grandparents_mode=grandparents_mode,
+                                    last_action_time_ref=last_action_time_ref,
+                                    completion_text_ref=completion_text_ref,
+                                    live_session_ref=live_session_ref):
+                    if narration_enabled and active_sessions.get(session_id) is this_session:
+                        this_session["live_task"] = asyncio.create_task(
+                            run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                        )
 
-                # Only start narration stream if enabled
-                live_task = None
-                if narration_enabled:
-                    live_task = asyncio.create_task(
-                        run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref, screenshot_queue)
+                async def open_browser(url: str = "", browser=browser):
+                    """Called by the steps flow once it knows this is a real task,
+                    with the page to open first (empty: the search page)."""
+                    try:
+                        await browser.launch(start_url=url)
+                    except Exception as launch_err:
+                        raise RuntimeError(f"Failed to launch browser: {launch_err}") from launch_err
+
+                if use_steps:
+                    agent_task = asyncio.create_task(
+                        # No narrator slot when narration is off, so nothing waits for one.
+                        run_task(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref,
+                                 live_session_ref if narration_enabled else None,
+                                 open_browser=open_browser, start_narration=start_narration)
                     )
+                else:
+                    agent_task = asyncio.create_task(
+                        run_agent_loop(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
+                    )
+                    start_narration()
 
                 active_sessions[session_id]["agent_task"] = agent_task
-                active_sessions[session_id]["live_task"] = live_task
                 active_sessions[session_id]["completion_text_ref"] = completion_text_ref
                 active_sessions[session_id]["live_session_ref"] = live_session_ref
 
                 # Monitor agent completion
-                async def on_agent_done(t):
+                async def on_agent_done(t, this_session=this_session):
                     try:
                         await t
                     except asyncio.CancelledError:
@@ -308,8 +365,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         except Exception:
                             pass  # WebSocket may already be closed
                     finally:
-                        # Cancel live stream when agent is done
-                        session = active_sessions.pop(session_id, None)
+                        # Cancel live stream when agent is done. A newer task
+                        # may own the session by now; leave that one alone.
+                        session = this_session
+                        if active_sessions.get(session_id) is this_session:
+                            del active_sessions[session_id]
                         if session:
                             lt = session.get("live_task")
                             if lt and not lt.done():
@@ -340,40 +400,28 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             elif msg_type == "cancel_task":
                 logger.info(f"Task cancelled: session={session_id}")
-                if session_id in active_sessions:
-                    session = active_sessions[session_id]
-                    for key in ["agent_task", "live_task"]:
-                        t = session.get(key)
-                        if t and not t.done():
-                            t.cancel()
-                    browser = session.get("browser")
-                    if browser:
-                        await browser.close()
-                    del active_sessions[session_id]
+                await stop_session(session_id)
                 await ws_manager.send_status(session_id, "cancelled", "Task cancelled")
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: session={session_id}")
-        ws_manager.disconnect(session_id)
-        # Clean up session
-        if session_id in active_sessions:
-            session = active_sessions[session_id]
-            for key in ["agent_task", "live_task"]:
-                t = session.get(key)
-                if t and not t.done():
-                    t.cancel()
-            browser = session.get("browser")
-            if browser:
-                await browser.close()
-            del active_sessions[session_id]
+        ws_manager.disconnect(session_id, websocket)
+        # Keep the task running for a short while: a reload or a network drop
+        # reconnects with the same session and picks it up again.
+        if session_id not in ws_manager.active_connections:
+            dashboard_gone(session_id)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        ws_manager.disconnect(session_id)
+        ws_manager.disconnect(session_id, websocket)
 
 @app.websocket("/ws/live_ext/{session_id}")
 async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for the Chrome Extension to stream frames and receive commands."""
     await ws_manager.connect_extension(session_id, websocket)
+    # An extension reconnecting mid-task picks the live view up again.
+    session = active_sessions.get(session_id)
+    if session and getattr(session.get("browser"), "live_view", False):
+        await ws_manager.send_to_extension(session_id, {"type": "start_stream"})
 
     try:
         while True:
@@ -386,16 +434,17 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
             msg_type = message.get("type", "")
 
             if msg_type == "screen_frame":
-                # Forward to dashboard immediately for smooth live viewer response
-                b64_image = message.get("image", "")
-                await ws_manager.send_screenshot(session_id, b64_image, 0)
-                
-                # If adapter is actively listening, update it
+                # A small live frame: for the dashboard only.
+                await ws_manager.send_screenshot(session_id, message.get("image", ""), 0)
                 session = active_sessions.get(session_id)
-                if session and "browser" in session:
-                    adapter = session["browser"]
-                    if hasattr(adapter, "update_screenshot"):
-                        adapter.update_screenshot(b64_image)
+                if session and hasattr(session.get("browser"), "note_live_frame"):
+                    session["browser"].note_live_frame(message.get("url"))
+
+            elif msg_type == "user_input":
+                # The user clicked or typed in HandOff's tab during a task.
+                session = active_sessions.get(session_id)
+                if session and session.get("browser") is not None:
+                    session["browser"].user_input_seen = True
 
             elif msg_type == "action_result":
                 session = active_sessions.get(session_id)
@@ -406,20 +455,12 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"Extension WebSocket disconnected: session={session_id}")
-        ws_manager.disconnect_extension(session_id)
+        ws_manager.disconnect_extension(session_id, websocket)
     except Exception as e:
         logger.error(f"Extension WebSocket error: {e}")
-        ws_manager.disconnect_extension(session_id)
+        ws_manager.disconnect_extension(session_id, websocket)
 
 if __name__ == "__main__":
     import uvicorn
-    import sys
-    import asyncio
-    
-    if sys.platform == "win32":
-        # Force proactor event loop for Playwright before Uvicorn does anything
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        # DO NOT use reload=True on Windows with Playwright, it breaks the subprocess transport
-        uvicorn.run("app.main:app", host="127.0.0.1", port=8080)
-    else:
-        uvicorn.run("app.main:app", host="127.0.0.1", port=8080, reload=True)
+
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8080, reload=True)

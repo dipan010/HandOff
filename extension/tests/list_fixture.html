@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>List test</title></head>
+<body>
+  <nav><ul><li><a href="/a">Home page link</a></li><li><a href="/b">Offers and deals</a></li><li><a href="/c">Help and support</a></li></ul></nav>
+  <main>
+    <table>
+      <caption>Trains from Howrah to Delhi</caption>
+      <thead><tr><th>Train</th><th>Leaves</th><th>Fare</th></tr></thead>
+      <tbody>
+        <tr><td>Rajdhani Express</td><td>16:50</td><td>₹3,200</td></tr>
+        <tr><td>Poorva Express</td><td>08:05</td><td>₹1,450</td></tr>
+      </tbody>
+    </table>
+    <table style="display:none"><tr><td>hidden</td></tr><tr><td>table</td></tr></table>
+    <div class="grid">
+      <div class="card c1"><a href="https://shop.example.com/p/1">boAt Stone 350 speaker</a><span>₹1,299</span><span>4.1 stars</span></div>
+      <div class="card c2"><a href="https://shop.example.com/p/2">JBL Go 3 speaker</a><span>₹2,999</span><span>4.4 stars</span></div>
+      <div class="card c3"><a href="https://shop.example.com/p/3">Sony SRS-XB13 speaker</a><span>₹3,490</span><span>4.3 stars</span></div>
+      <div class="card c4"><a href="https://shop.example.com/p/4">Mivi Roam 2 speaker</a><span>₹999</span><span>4.0 stars</span></div>
+    </div>
+  </main>
+  <pre id="out"></pre>
+  <script src="../page_map.js"></script>
+  <script>
+    document.getElementById("out").textContent = JSON.stringify(window.handoffPage.pullItems("speaker price"));
+  </script>
+</body>
+</html>

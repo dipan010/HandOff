@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
-    "name": "UDAA Live Controller",
+    "name": "HandOff",
     "version": "1.0",
-    "description": "Bridges Universal Digital Accessibility Agent AI with the live browser.",
+    "description": "HandOff works in your browser tab for you: it reads the page, and clicks and types where you ask.",
     "permissions": [
         "tabs",
         "scripting",
@@ -23,11 +23,14 @@
             ],
             "js": [
                 "overlay.js",
+                "page_map.js",
                 "content_script.js"
-            ]
+            ],
+            "all_frames": true,
+            "match_about_blank": true
         }
     ],
     "action": {
-        "default_title": "UDAA Controller"
+        "default_title": "HandOff"
     }
 }

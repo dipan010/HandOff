@@ -15,21 +15,27 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("GOOGLE_API_KEY", "test-key")
 
 
+@pytest.fixture(autouse=True)
+def quiet_side_effects(monkeypatch):
+    """Keep every test away from HandOff's real files: actions.log, saved
+    screenshots and session state."""
+    async def nothing(*a, **k):
+        return None
+
+    monkeypatch.setattr("app.steps.run.upload_screenshot", nothing)
+    monkeypatch.setattr("app.steps.run.log_action", nothing)
+    monkeypatch.setattr("app.steps.run.update_session_state", nothing)
+    monkeypatch.setattr("app.steps.page_step.log_action", nothing)
+    monkeypatch.setattr("app.steps.page_step.update_session_state", nothing)
+    monkeypatch.setattr("app.steps.finish.update_session_state", nothing)
+
+
 @pytest.fixture
 def event_loop():
     """Provide a fresh event loop per test so module-level state stays clean."""
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
-
-
-@pytest.fixture
-def clean_narration_times():
-    """Reset per-session narration timing dict between tests."""
-    from app import computer_use
-    computer_use._narration_times.clear()
-    yield
-    computer_use._narration_times.clear()
 
 
 @pytest.fixture

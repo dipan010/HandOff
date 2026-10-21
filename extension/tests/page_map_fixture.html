@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Page map test</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  .row { padding: 8px; }
+  #below { margin-top: 3000px; }
+  #cover { position: fixed; top: 500px; left: 0; width: 400px; height: 80px; background: #eee; }
+  .gone { display: none; }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Book a train</h1>
+    <div class="row"><label for="from">From station</label> <input id="from" value="Delhi"></div>
+    <div class="row"><input id="to" placeholder="To station"></div>
+    <div class="row"><input id="pw" type="password" value="hunter2" aria-label="Password"></div>
+    <div class="row"><input id="card" name="cardnumber" value="4111111111111111" placeholder="Card"></div>
+    <div class="row"><label><input type="checkbox" id="student" checked> Student fare</label></div>
+    <div class="row"><select id="cls" aria-label="Class"><option>Sleeper</option><option selected>AC 3 Tier</option></select></div>
+    <div class="row"><a href="/help"><span>Help</span></a></div>
+    <div class="row"><button class="gone">Invisible</button></div>
+    <div class="row" style="position:absolute; top:510px; left:20px"><button id="covered">Covered button</button></div>
+    <div id="cover"><button id="accept">Accept cookies</button></div>
+    <div class="row" style="position:absolute; top:420px"><div role="button" tabindex="0" aria-expanded="false">Menu</div></div>
+    <div id="below"><button>Far below</button></div>
+    <p>Trains run daily.</p>
+  </main>
+  <pre id="out"></pre>
+  <script src="../page_map.js"></script>
+  <script>
+    const m = window.handoffPage.map();
+    const t = window.handoffPage.readText();
+    document.getElementById("out").textContent = JSON.stringify({ map: m, text: t });
+  </script>
+</body>
+</html>
