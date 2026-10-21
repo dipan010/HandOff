@@ -165,6 +165,7 @@ class TaskRun:
     next_screenshot: bytes | None = None
     sign_in_guard: SignInGuard | None = None
     action_model: str = ""   # model used to choose page actions (quick: FAST, hard: STRONG)
+    closed_notices: set = field(default_factory=set)   # (address, button) of cookie notices already closed
 
     def __post_init__(self):
         if self.sign_in_guard is None:

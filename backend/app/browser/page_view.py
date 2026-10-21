@@ -147,3 +147,34 @@ def change_words(change: dict | None) -> str:
         if n:
             words.append(phrase.format(n=n, s="" if n == 1 else "s", es="" if n == 1 else "es"))
     return ", ".join(words)
+
+
+# Cookie notices: HandOff closes them itself, saying no to cookies that aren't
+# needed. If a notice offers no way to say no, it's left for the model. Only
+# whole labels that are answers to a cookie question count, so "Reject request"
+# or "Decline" elsewhere on a page is never clicked.
+_COOKIE_WORDS = re.compile(r"\b(cookies?|consent)\b", re.I)
+_REJECT_ALL = re.compile(r"(reject|decline|refuse) all( cookies)?", re.I)
+_SAY_NO = re.compile(
+    r"(reject|decline|refuse) all( cookies)?"
+    r"|(i )?(do not|don.?t) accept( all)?( cookies)?"
+    r"|(reject|decline|refuse)( non.?essential| optional| additional)? cookies"
+    r"|only (necessary|essential)( cookies)?"
+    r"|(use )?(necessary|essential)( cookies)? only"
+    r"|continue without accepting", re.I)
+_SAY_YES = re.compile(
+    r"(i )?(accept|allow|agree)( to)?( all)?( cookies)?|accept (and|&) (continue|close)|allow all cookies", re.I)
+
+
+def _answer(el: dict) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", " ", str(el.get("label") or ""))).strip()
+
+
+def cookie_notice_button(page: dict | None) -> dict | None:
+    """The button that says no on a cookie notice, or None if there isn't one."""
+    buttons = [e for e in (page or {}).get("elements") or [] if e.get("role") in ("button", "link")]
+    says_yes = any(_SAY_YES.fullmatch(_answer(e)) for e in buttons)
+    found = [e for e in buttons if _SAY_NO.fullmatch(_answer(e))
+             and (_COOKIE_WORDS.search(_answer(e)) or says_yes)]
+    found.sort(key=lambda e: 0 if _REJECT_ALL.fullmatch(_answer(e)) else 1)
+    return found[0] if found else None

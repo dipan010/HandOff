@@ -18,7 +18,7 @@ import time
 from google.genai import types
 
 from app.action_log import log_action
-from app.browser.page_view import PAGE_VIEW_HEADER, page_view_text, structure_hash
+from app.browser.page_view import PAGE_VIEW_HEADER, cookie_notice_button, page_view_text, structure_hash
 from app.firestore_client import update_session_state
 from app.steps.check import ScreenState, changed, is_step_done, quick_check
 from app.steps.describe import action_in_plain_words, action_now
@@ -209,6 +209,19 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
 
         page = settled if settled is not None else await tools.page_map()
         settled = None
+        notes = []
+
+        # A cookie notice covering the page: say no to it here, once per page,
+        # without asking the model.
+        notice = cookie_notice_button(page)
+        notice_key = ((page or {}).get("url"), (notice or {}).get("label"))
+        if notice is not None and notice_key not in run.closed_notices:
+            run.closed_notices.add(notice_key)
+            closed = await tools.run("click", {"element_id": notice.get("id")})
+            if closed.ok:
+                logger.info(f"Closed a cookie notice: {notice.get('label')}")
+                notes.append(f"HandOff closed a cookie notice by choosing \"{notice.get('label')}\".")
+                page = await settled_page(tools, run.timing) or page
         tools.last_page = page
         # A full screenshot only when the model will look at it: the page view
         # usually says enough, and the dashboard has its own live view.
@@ -220,7 +233,6 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             await run.show_and_save(shot)
         add_shot = bool(shot)
         url = (page or {}).get("url") or await run.url()
-        notes = []
 
         # Did the last batch of actions change anything?
         if before is not None:
