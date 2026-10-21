@@ -1,5 +1,6 @@
 "use client";
 
+import { pictureSrc } from '@/lib/picture';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { PlanSteps } from "@/components/PlanSteps";
@@ -178,7 +179,7 @@ export default function Home() {
               <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-[#0a0f1a] group border-4 border-slate-100 dark:border-slate-800 shadow-inner flex items-center justify-center">
                 {screenshot ? (
                   <img
-                    src={`data:image/png;base64,${screenshot}`}
+                    src={pictureSrc(screenshot)}
                     alt="Agent Live Viewport"
                     className="w-full h-full object-contain"
                   />

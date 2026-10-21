@@ -26,6 +26,8 @@ class LiveBrowserAdapter(BrowserAdapter):
         self.reconnect_wait = 3.0
         # Set when the extension sees the user click or type in the work tab.
         self.user_input_seen = False
+        # True while a task runs: the extension sends the dashboard small live frames.
+        self.live_view = False
 
     @property
     def page(self):
@@ -80,35 +82,38 @@ class LiveBrowserAdapter(BrowserAdapter):
 
         logger.info(f"Triggered Live Chrome Native Tab for session {self.session_id}")
 
-    async def capture_screenshot(self, min_timestamp: float = 0) -> bytes:
-        """Wait for and return the latest screenshot from the extension stream.
+    async def start_live_view(self):
+        """Ask the extension to send the dashboard small live frames while the task runs."""
+        from app.websocket import manager as ws_manager
+        self.live_view = True
+        await ws_manager.send_to_extension(self.session_id, {"type": "start_stream"})
 
-        If min_timestamp is provided, waits for a frame that arrived AFTER that time.
+    async def capture_screenshot(self, min_timestamp: float = 0) -> bytes:
+        """A full-size screenshot of HandOff's tab, taken now.
+
+        The dashboard's live frames are small and not used for this. If the
+        tab can't be captured (e.g. it isn't in front), the last full
+        screenshot is returned. `min_timestamp` is kept for callers; a
+        screenshot taken now is always newer.
         """
         import time
-        # Wait up to 10 seconds for a fresh screenshot
-        for _ in range(100):
-            if self._latest_screenshot_bytes and self._latest_screenshot_time >= min_timestamp:
-                return self._latest_screenshot_bytes
-            await asyncio.sleep(0.1)
-
-        if min_timestamp > 0:
-            logger.warning(f"Timeout waiting for FRESH screenshot (min_ts={min_timestamp}) for {self.session_id}. Returning latest.")
+        reply = await self.execute_action("screenshot", {})
+        if isinstance(reply, dict) and reply.get("success") and reply.get("image"):
+            try:
+                self._latest_screenshot_bytes = base64.b64decode(reply["image"])
+                self._latest_screenshot_time = time.time()
+                self.note_live_frame(reply.get("url"))
+            except Exception as e:
+                logger.error(f"Failed to decode screenshot: {e}")
         else:
-            logger.warning(f"Timeout waiting for ANY screenshot from extension for {self.session_id}")
+            detail = reply.get("detail") if isinstance(reply, dict) else reply
+            logger.warning(f"No screenshot for {self.session_id}: {detail}")
+        return self._latest_screenshot_bytes or b""
 
-        return getattr(self, "_latest_screenshot_bytes", b"") or b""
-
-    def update_screenshot(self, b64_frame: str, url: str | None = None):
-        """Called by the websocket handler when a new frame arrives."""
-        import time
+    def note_live_frame(self, url: str | None = None):
+        """A live frame went to the dashboard: remember the address it came with."""
         if url and url != "unknown":
             self._latest_url = url
-        try:
-            self._latest_screenshot_bytes = base64.b64decode(b64_frame)
-            self._latest_screenshot_time = time.time()
-        except Exception as e:
-            logger.error(f"Failed to decode extension frame: {e}")
 
     def complete_action(self, result: dict):
         """Called by the websocket handler when an action result arrives."""
@@ -154,8 +159,9 @@ class LiveBrowserAdapter(BrowserAdapter):
 
     async def close(self):
         """Cleanup resources."""
-        # Stop the stream visually on the extension
+        # Stop the live view
         from app.websocket import manager as ws_manager
+        self.live_view = False
         try:
             await ws_manager.send_to_extension(self.session_id, {"type": "stop_stream"})
         except Exception:

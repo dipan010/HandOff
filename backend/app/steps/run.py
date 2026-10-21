@@ -479,6 +479,9 @@ async def run_task(
             await ui.send_error(session_id, EXTENSION_MISSING)
             await update_session_state(session_id, "error", "Extension not connected")
             return
+    start_live_view = getattr(browser, "start_live_view", None)
+    if start_live_view is not None:
+        await start_live_view()
     await run.say_on_it()
     plan_model = cfg.STRONG_MODEL if sorted_request.effort == "hard" else cfg.FAST_MODEL
     run.action_model = plan_model

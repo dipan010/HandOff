@@ -9,10 +9,9 @@
 // Actions and screenshots always go to the work tab, never to whatever tab
 // happens to be in front (the dashboard is a tab too).
 
-importScripts("frames.js");
+importScripts("frames.js", "live_view.js");
 
 let ws = null;
-let streamingInterval = null;
 let currentSessionId = null;
 let workTabId = null;
 
@@ -44,16 +43,18 @@ function connectWebSocket(sessionId, tabId) {
     ws = new WebSocket(`ws://localhost:8080/ws/live_ext/${sessionId}`);
 
     ws.onopen = () => {
+        // The live view starts when the backend says a task is running.
         console.log("HandOff: connected to backend for session", sessionId, "work tab", workTabId);
-        startStreamingFrames();
     };
 
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         if (message.type === "execute_action") {
             executeInWorkTab(message);
+        } else if (message.type === "start_stream") {
+            liveView.start();
         } else if (message.type === "stop_stream") {
-            stopStreamingFrames();
+            liveView.stop();
         } else if (message.type === "UDAA_STATUS" || message.type === "status") {
             const payload = message.payload || message;
             sendToWorkTab({ type: "UDAA_STATUS", payload });
@@ -64,7 +65,7 @@ function connectWebSocket(sessionId, tabId) {
 
     ws.onclose = () => {
         console.log("HandOff: disconnected");
-        stopStreamingFrames();
+        liveView.stop();
     };
 }
 
@@ -173,6 +174,10 @@ function executeInWorkTab(command) {
             navigateWorkTab(tab, command);
             return;
         }
+        if (command.action === "screenshot") {
+            fullScreenshot(tab);
+            return;
+        }
         ensureScripts(tab.id, () => {
             if (command.action === "page_map") {
                 pageMapAllFrames(tab);
@@ -237,33 +242,47 @@ function pageMapAllFrames(tab) {
 
 // ── Screen frames ───────────────────────────────────────────────────────────
 
-function captureAndSendFrame() {
-    getWorkTab((tab) => {
-        // Only the visible tab of a window can be captured. If the work tab is
-        // behind another tab, skip this frame rather than send the wrong page.
-        if (!tab || !tab.active) return;
-        chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }, (dataUrl) => {
-            if (chrome.runtime.lastError || !dataUrl) return;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: "screen_frame",
-                    image: dataUrl.split(',')[1],
-                    url: tab.url || "unknown",
-                }));
-            }
-        });
+const tabCapturer = makeTabCapturer(({ windowId, format }) => new Promise((resolve, reject) => {
+    const options = format === "jpeg" ? { format, quality: 70 } : { format };
+    chrome.tabs.captureVisibleTab(windowId, options, (dataUrl) => {
+        if (chrome.runtime.lastError || !dataUrl) reject(new Error(chrome.runtime.lastError?.message || "no picture"));
+        else resolve(dataUrl);
     });
+}));
+
+const workTab = () => new Promise((resolve) => getWorkTab(resolve));
+
+const liveView = new LiveView({
+    // Only the visible tab of a window can be captured. If the work tab is
+    // behind another tab, skip this frame rather than send the wrong page.
+    capture: async () => {
+        const tab = await workTab();
+        if (!tab || !tab.active) return null;
+        return { dataUrl: await tabCapturer.take({ windowId: tab.windowId, format: "jpeg" }), url: tab.url || "unknown" };
+    },
+    shrink: shrinkToJpeg,
+    send: ({ image, url }) => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "screen_frame", image, url }));
+    },
+});
+
+// A fresh live frame right after something happened, if the live view is on.
+function captureAndSendFrame() {
+    liveView.frame();
 }
 
-function startStreamingFrames() {
-    if (streamingInterval) return;
-    streamingInterval = setInterval(captureAndSendFrame, 1200);
-}
-
-function stopStreamingFrames() {
-    if (streamingInterval) {
-        clearInterval(streamingInterval);
-        streamingInterval = null;
+// A full-size picture, for when HandOff itself needs to look.
+async function fullScreenshot(tab) {
+    if (!tab.active) {
+        reportResult({ action: "screenshot", success: false, url: tab.url,
+                       detail: "HandOff's tab isn't in front, so it can't be seen." });
+        return;
+    }
+    try {
+        const dataUrl = await tabCapturer.take({ windowId: tab.windowId, format: "png" });
+        reportResult({ action: "screenshot", success: true, image: dataUrl.split(",")[1], url: tab.url });
+    } catch (e) {
+        reportResult({ action: "screenshot", success: false, url: tab.url, detail: String(e && e.message || e) });
     }
 }
 

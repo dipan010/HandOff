@@ -368,6 +368,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for the Chrome Extension to stream frames and receive commands."""
     await ws_manager.connect_extension(session_id, websocket)
+    # An extension reconnecting mid-task picks the live view up again.
+    session = active_sessions.get(session_id)
+    if session and getattr(session.get("browser"), "live_view", False):
+        await ws_manager.send_to_extension(session_id, {"type": "start_stream"})
 
     try:
         while True:
@@ -376,16 +380,11 @@ async def extension_websocket_endpoint(websocket: WebSocket, session_id: str):
             msg_type = message.get("type", "")
 
             if msg_type == "screen_frame":
-                # Forward to dashboard immediately for smooth live viewer response
-                b64_image = message.get("image", "")
-                await ws_manager.send_screenshot(session_id, b64_image, 0)
-                
-                # If adapter is actively listening, update it
+                # A small live frame: for the dashboard only.
+                await ws_manager.send_screenshot(session_id, message.get("image", ""), 0)
                 session = active_sessions.get(session_id)
-                if session and "browser" in session:
-                    adapter = session["browser"]
-                    if hasattr(adapter, "update_screenshot"):
-                        adapter.update_screenshot(b64_image, message.get("url"))
+                if session and hasattr(session.get("browser"), "note_live_frame"):
+                    session["browser"].note_live_frame(message.get("url"))
 
             elif msg_type == "user_input":
                 # The user clicked or typed in HandOff's tab during a task.
