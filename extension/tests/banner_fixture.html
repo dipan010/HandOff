@@ -25,6 +25,7 @@
       const results = {
         normal: show({ status: "executing", message: "Clicking 'Search'" }),
         grandparents: show({ status: "executing", message: "Clicking 'Search'", grandparents_mode: true }),
+        noMessage: show({ status: "thinking" }),
       };
       await new Promise((r) => setTimeout(r, 1200));   // the secure-page badge appears after a moment
       const badge = document.getElementById("udaa-security-badge");

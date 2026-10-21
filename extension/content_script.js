@@ -870,6 +870,17 @@ async function _runElementAction(action, args) {
 // made by this script, which the browser marks as not trusted.
 // (If real input via chrome.debugger is added later, it will be trusted too
 // and must be told apart from the user's.)
+const STATUS_WORDS = {
+    "thinking": "Thinking about what to do next...",
+    "waiting": "Just a moment, waiting my turn...",
+    "executing": "Working on it...",
+    "navigating": "Going to a new page...",
+    "confirming": "Double checking with you...",
+    "idle": "Ready to help",
+    "error": "Oops, something went wrong",
+    "completed": "Finished helping with this task.",
+    "cancelled": "Stopped task."
+};
 const BUSY_STATUSES = new Set(["started", "thinking", "waiting", "executing", "navigating"]);
 let _taskBusy = false;
 let _lastUserReport = 0;
@@ -1157,23 +1168,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             _taskBusy = BUSY_STATUSES.has(status);
             _watchPageBetweenActions(_taskBusy);
             const isGP = request.payload.grandparents_mode;
-            // The banner shows the HandOff name itself; this is just what it's doing.
-            let msg = request.payload.message || status.toUpperCase();
+            // The banner shows the HandOff name itself; this is just what it's
+            // doing, in plain words (never a bare status like "EXECUTING").
+            let msg = request.payload.message || STATUS_WORDS[status] || "Working on it...";
 
             if (isGP) {
-                const GP_COPY = {
-                    "thinking": "Thinking about what to do next...",
-                    "waiting": "Just a moment, waiting my turn...",
-                    "executing": "Working on it...",
-                    "navigating": "Going to a new page...",
-                    "confirming": "Double checking with you...",
-                    "idle": "Ready to help",
-                    "error": "Oops, something went wrong",
-                    "completed": "Finished helping with this task.",
-                    "cancelled": "Stopped task."
-                };
-                if (GP_COPY[status]) {
-                    msg = GP_COPY[status];
+                if (STATUS_WORDS[status]) {
+                    msg = STATUS_WORDS[status];
                 } else if (request.payload.message && status !== "completed") {
                     // Fallback to the natural language summary sent by the backend
                     msg = request.payload.message;

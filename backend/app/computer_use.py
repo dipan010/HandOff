@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 from app.steps.safety import SignInGuard, pause_and_wait as _pause_and_wait
-from app.steps.describe import action_in_plain_words as _action_to_plain_english
+from app.steps.describe import action_in_plain_words as _action_to_plain_english, action_now
 
 async def run_agent_loop(
     session_id: str,
@@ -309,7 +309,7 @@ async def run_agent_loop(
             logger.info(f"Action: {action_name}({action_args}) -> {plain_action}")
             
             # Use Plain English if Grandparents Mode is on
-            status_msg = plain_action if grandparents_mode else f"Executing: {action_name}"
+            status_msg = action_now(action_name, action_args, None)
 
             # 1. PREVIEW: show what we are ABOUT to do (Section 6.2)
             await ws_manager.send_action_preview(session_id, plain_action)

@@ -27,7 +27,7 @@ from app.browser.base import BrowserAdapter
 from app.config import get_settings
 from app.firestore_client import update_session_state
 from app.steps.check import ScreenState, changed, is_step_done
-from app.steps.describe import action_in_plain_words
+from app.steps.describe import action_in_plain_words, action_now
 from app.steps.finish import finish_task
 from app.steps.model_call import Caller, GeminiCaller, plain_error, used_up, used_up_message
 from app.steps.page_step import do_step_by_page
@@ -400,7 +400,7 @@ class TaskRun:
             self.actions_used += 1
             await self.ui.send_action_preview(self.session_id, plain)
             await asyncio.sleep(self.timing.preview)
-            await self.status("executing", plain if self.grandparents_mode else f"Executing: {name}")
+            await self.status("executing", action_now(name, args, None))
             await log_action(self.session_id, self.actions_used, name, args)
 
             result = await self.browser.execute_action(name, args)

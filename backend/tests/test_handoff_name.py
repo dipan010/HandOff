@@ -46,3 +46,7 @@ def test_grandparents_mode_keeps_the_handoff_name(banner):
 
 def test_the_secure_page_badge_names_handoff(banner):
     assert "HandOff" in banner["badge"] and "UDAA" not in banner["badge"]
+
+
+def test_a_status_without_a_message_is_still_plain_words(banner):
+    assert banner["noMessage"]["text"] == "Thinking about what to do next..."

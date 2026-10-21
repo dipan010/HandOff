@@ -21,7 +21,7 @@ from app.action_log import log_action
 from app.browser.page_view import PAGE_VIEW_HEADER, page_view_text, structure_hash
 from app.firestore_client import update_session_state
 from app.steps.check import ScreenState, changed, is_step_done, quick_check
-from app.steps.describe import action_in_plain_words
+from app.steps.describe import action_in_plain_words, action_now
 from app.steps.model_call import ask_with_backup, plain_error
 from app.steps.plan import Step
 from app.steps.safety import pause_and_wait, risky_target
@@ -399,7 +399,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             step_actions += 1
             await run.ui.send_action_preview(run.session_id, plain)
             await asyncio.sleep(run.timing.preview)
-            await run.status("executing", plain if run.grandparents_mode else f"Executing: {name}")
+            await run.status("executing", action_now(name, args, page))
             await log_action(run.session_id, run.actions_used, name, args)
 
             result = await tools.run(name, args)
