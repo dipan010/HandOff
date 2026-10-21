@@ -59,7 +59,11 @@ def test_frames_are_listed_and_read_in_real_chrome(tmp_path):
         parent = (REPO / "extension" / "tests" / "frame_parent_fixture.html").read_text().replace("FRAME_URL", frame_url)
         (REPO / "extension" / "tests" / "_frame_parent.html").write_text(parent)
         dom = subprocess.run(
+            # One process for both origins: --virtual-time-budget doesn't wait for work in a
+            # separate frame process, so the page could be saved before the frame answered.
+            # The origin rules between page and frame still apply.
             [CHROME, "--headless=new", "--disable-gpu", "--window-size=1200,800", "--virtual-time-budget=5000",
+             "--disable-site-isolation-trials", "--disable-features=IsolateOrigins,site-per-process",
              "--dump-dom", f"http://127.0.0.1:{port}/tests/_frame_parent.html"],
             capture_output=True, text=True, timeout=60).stdout
     finally:

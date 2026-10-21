@@ -1,6 +1,24 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Frame test</title></head>
+<head>
+  <meta charset="utf-8"><title>Frame test</title>
+  <script>
+    // Listen before the frames exist: a quick frame can post before the rest of this page has loaded.
+    let fromFrame = null;
+    const report = () => {
+      if (!fromFrame || !window.handoffPage) return;
+      const top = window.handoffPage.map();
+      document.getElementById("out").textContent = JSON.stringify({ top, frame: fromFrame });
+    };
+    window.addEventListener("message", (e) => {
+      if (e.source !== document.getElementById("form").contentWindow) return;
+      fromFrame = e.data;
+      report();
+    });
+    // "load" waits for the frames too; then ask the booking form for its page map.
+    window.addEventListener("load", () => document.getElementById("form").contentWindow.postMessage("page map please", "*"));
+  </script>
+</head>
 <body>
   <button>Back to shop</button>
   <!-- A booking form from another site, inside a frame -->
@@ -8,12 +26,6 @@
   <iframe width="1" height="1" src="FRAME_URL"></iframe>  <!-- too small to matter -->
   <pre id="out"></pre>
   <script src="../page_map.js"></script>
-  <script>
-    window.addEventListener("message", (e) => {
-      if (e.source !== document.getElementById("form").contentWindow) return;
-      const top = window.handoffPage.map();
-      document.getElementById("out").textContent = JSON.stringify({ top, frame: e.data });
-    });
-  </script>
+  <script>report();</script>
 </body>
 </html>
