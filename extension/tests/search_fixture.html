@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Search test</title></head>
+<body>
+  <!-- An ad block, Google style -->
+  <div id="tads"><a href="https://shop.example.com/turing-mugs"><h3>Turing mugs on sale</h3></a></div>
+  <!-- A sponsored result, Bing style -->
+  <ol>
+    <li class="b_ad"><h2><a href="https://ads.example.net/offer">Learn coding fast</a></h2></li>
+    <!-- Bing: heading holds a redirect link whose u= part carries the real address -->
+    <li class="b_algo">
+      <h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly9lbi5tLndpa2lwZWRpYS5vcmcvd2lraS9BbGFuX1R1cmluZw&ntb=1">Alan Turing - Wikipedia</a></h2>
+      <p>Alan Mathison Turing was an English mathematician, computer scientist, logician and cryptanalyst.</p>
+    </li>
+  </ol>
+  <!-- Google: link holds the heading; one goes through /url?q= -->
+  <div class="g"><a href="/url?q=https://www.britannica.com/biography/Alan-Turing&sa=U"><h3>Alan Turing | Biography, Facts</h3></a>
+    <span>British mathematician and logician who made major contributions to mathematics and computer science.</span></div>
+  <div class="g"><a href="https://www.turing.ac.uk/"><h3>The Alan Turing Institute</h3></a></div>
+  <!-- Google's coded result link can't be read, but opening it still works -->
+  <div class="g"><a href="https://www.google.com/goto?url=CAESZAHrOzAV574Okl2f"><h3>Alan Turing - Stanford Encyclopedia</h3></a></div>
+  <!-- The search site's own links and repeats are left out -->
+  <div><a href="https://www.google.com/search?q=alan+turing&tbm=isch"><h3>Images for alan turing</h3></a></div>
+  <div class="g"><a href="https://www.turing.ac.uk/"><h3>The Alan Turing Institute (again)</h3></a></div>
+  <a href="https://example.org/plain">A plain link with no heading</a>
+  <pre id="out"></pre>
+  <script src="../page_map.js"></script>
+  <script>
+    document.getElementById("out").textContent = JSON.stringify(window.handoffPage.searchResults());
+  </script>
+</body>
+</html>

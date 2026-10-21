@@ -1,7 +1,9 @@
 "use client";
 
+import { pictureSrc } from '@/lib/picture';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { PlanSteps } from "@/components/PlanSteps";
 import { useSpeech } from "@/hooks/useSpeech";
 import { SafetyConfirmModal } from "@/components/SafetyConfirmModal";
 import { PausePromptModal } from "@/components/PausePromptModal";
@@ -16,7 +18,9 @@ export default function Home() {
   const [narrationEnabled, setNarrationEnabled] = useState(true);
   const [displayText, setDisplayText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
-  const narrationQueue = useRef<string[]>([]);
+  // Each message, and whether the dashboard should speak it (not when the
+  // narrator voice is already saying it: one voice at a time).
+  const narrationQueue = useRef<{ text: string; speak: boolean }[]>([]);
   const isDisplaying = useRef(false);
   const narrationEnabledRef = useRef(narrationEnabled);
   useEffect(() => { narrationEnabledRef.current = narrationEnabled; }, [narrationEnabled]);
@@ -29,19 +33,32 @@ export default function Home() {
     screenshot,
     actions,
     narration,
-    actionPreview,
+    narrationSpeak,
     safetyRequest,
     pausePrompt,
+    planSteps,
     error,
     startTask,
     sendSafetyResponse,
     cancelTask,
   } = useWebSocket(sessionId);
 
-  // Generate a new session ID on mount
+  // Keep this tab's session ID across reloads, so a reload picks up a running task.
   useEffect(() => {
     if (!sessionId) {
-      setSessionId(crypto.randomUUID().replace(/-/g, '').slice(0, 8));
+      let saved: string | null = null;
+      try {
+        saved = window.sessionStorage.getItem("handoff_session_id");
+      } catch {
+        // storage blocked: fall back to a new ID
+      }
+      const id = saved || crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+      try {
+        window.sessionStorage.setItem("handoff_session_id", id);
+      } catch {
+        // ignore
+      }
+      setSessionId(id);
     }
   }, [sessionId]);
 
@@ -50,7 +67,7 @@ export default function Home() {
     startTask(taskInput.trim(), urlInput.trim(), patienceMode, grandparentsMode, narrationEnabled);
   };
 
-  const isAgentActive = ["started", "navigating", "thinking", "executing", "confirming"].includes(status);
+  const isAgentActive = ["started", "navigating", "thinking", "waiting", "executing", "confirming"].includes(status);
 
   // Text-to-Speech for narration
   const { speak, stop } = useSpeech(narrationEnabled);
@@ -63,10 +80,10 @@ export default function Home() {
     }
     isDisplaying.current = true;
     const next = narrationQueue.current.shift()!;
-    setDisplayText(next);
+    setDisplayText(next.text);
     // Use ref so toggling narrationEnabled mid-queue reads the current value
-    if (narrationEnabledRef.current) {
-      speak(next);
+    if (narrationEnabledRef.current && next.speak) {
+      speak(next.text);
     }
 
     // Hold each message for at least 3 seconds
@@ -75,28 +92,14 @@ export default function Home() {
 
   useEffect(() => {
     if (narration) {
-      narrationQueue.current.push(narration);
+      narrationQueue.current.push({ text: narration, speak: narrationSpeak });
       if (!isDisplaying.current) {
         displayNextNarration();
       }
     }
+    // Only a new message is queued; narrationSpeak is set together with it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narration, displayNextNarration]);
-
-  // Speak status detail changes so audio-only users always know what step the
-  // agent is on — not just when the Live API has something to say.
-  useEffect(() => {
-    if (narrationEnabledRef.current && statusDetail) {
-      speak(statusDetail);
-    }
-  }, [statusDetail, speak]);
-
-  // Speak the action preview before the action fires.  Backend gives us a
-  // 0.8s (or 2s in grandparents mode) lead so the TTS has time to be heard.
-  useEffect(() => {
-    if (narrationEnabledRef.current && actionPreview) {
-      speak(`About to ${actionPreview.toLowerCase()}.`);
-    }
-  }, [actionPreview, speak]);
 
   // Stop speech when task ends
   useEffect(() => {
@@ -184,7 +187,7 @@ export default function Home() {
               <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-[#0a0f1a] group border-4 border-slate-100 dark:border-slate-800 shadow-inner flex items-center justify-center">
                 {screenshot ? (
                   <img
-                    src={`data:image/png;base64,${screenshot}`}
+                    src={pictureSrc(screenshot)}
                     alt="Agent Live Viewport"
                     className="w-full h-full object-contain"
                   />
@@ -352,6 +355,8 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {planSteps.length > 0 && <PlanSteps steps={planSteps} />}
 
             </div>
           </div>

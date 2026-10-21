@@ -1,7 +1,11 @@
 (function() {
 // Prevents re-injection: on SPA navigations or duplicate inject, skip silently (no throw).
-if (window.__udaaContentScriptLoaded) return;
-window.__udaaContentScriptLoaded = true;
+// A copy left from before the extension was reloaded can no longer talk to
+// the extension, so in that case load again.
+if (window.__udaaContentScriptLoaded && window.__udaaContentScriptLoaded()) return;
+window.__udaaContentScriptLoaded = () => {
+    try { return !!chrome.runtime.id; } catch (e) { return false; }
+};
 
 // Namespace all extension state under a single object to avoid conflicts with other extensions
 if (!window.__udaaState) {
@@ -388,7 +392,186 @@ async function _resolveTypeTarget(clickX, clickY, timeoutMs = 800) {
 // ACTION DISPATCHER
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── Did the action do anything? ──────────────────────────────────────────
+// Clicks and typing are watched: what was added or removed, opened or closed,
+// ticked, typed into or disabled, until the page goes quiet. The backend uses
+// this as a cheap check that the action had an effect (spec §7).
+const WATCHED_ACTIONS = new Set([
+    "click_element", "type_text", "choose_option", "set_checked", "press_key",
+    "click_at", "click", "left_click", "type_text_at", "type", "select_option", "click_option",
+]);
+const CHANGE_QUIET_MS = 250;   // no change for this long after the action: the page is done
+const CHANGE_MAX_MS = 1000;    // never wait longer than this after the action
+const CHANGE_ATTRIBUTES = ["aria-expanded", "open", "hidden", "aria-hidden", "disabled", "aria-disabled",
+    "aria-checked", "aria-selected", "aria-pressed"];
+const IGNORED_TAGS = new Set(["SCRIPT", "STYLE", "LINK", "META", "NOSCRIPT"]);
+
+// Parts of the page that change by themselves (clocks, a playing video's time,
+// carousels, live prices) are noticed between HandOff's actions while a task
+// runs. Their changes during an action are not the action's doing.
+const BY_ITSELF_MS = 3000;
+const _changedByItself = new WeakMap();   // element -> when it last changed by itself
+let _byItselfObserver = null;
+let _watchingAction = 0;
+
+function _changedElement(record) {
+    const node = record.target;
+    return node.nodeType === 1 ? node : node.parentElement;
+}
+
+function _noteChangesByItself(records) {
+    const now = Date.now();
+    for (const r of records) {
+        const el = _changedElement(r);
+        if (el) _changedByItself.set(el, now);
+    }
+}
+
+function _watchPageBetweenActions(on) {
+    if (on && !_byItselfObserver) {
+        _byItselfObserver = new MutationObserver((records) => { if (!_watchingAction) _noteChangesByItself(records); });
+        _byItselfObserver.observe(document.documentElement, {
+            subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: CHANGE_ATTRIBUTES,
+        });
+    } else if (!on && _byItselfObserver) {
+        _byItselfObserver.disconnect();
+        _byItselfObserver = null;
+    }
+}
+
+function _changesByItself(record) {
+    const el = _changedElement(record);
+    const last = el && _changedByItself.get(el);
+    if (!last || Date.now() - last > BY_ITSELF_MS) return false;
+    _changedByItself.set(el, Date.now());   // still changing: keep treating it as changing by itself
+    return true;
+}
+
+function _isOurs(node) {
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    return !!(el && el.closest && el.closest("[id^='udaa-'], .udaa-highlight"));
+}
+
+function _controlState() {
+    const state = new Map();
+    for (const el of document.querySelectorAll("input, select, textarea, [contenteditable=''], [contenteditable='true']")) {
+        state.set(el, {
+            value: el.isContentEditable ? el.textContent : el.value,
+            checked: !!el.checked,
+            disabled: !!el.disabled,
+        });
+        if (state.size >= 3000) break;
+    }
+    return state;
+}
+
+function _isTextBox(el) {
+    return el.tagName === "TEXTAREA" || el.isContentEditable ||
+        (el.tagName === "INPUT" && !["checkbox", "radio", "button", "submit", "reset", "file", "hidden"].includes(el.type));
+}
+
+async function _watchChanges(run) {
+    const counts = { added: 0, removed: 0, opened: 0, closed: 0, ticked: 0, unticked: 0,
+                     typed: 0, chosen: 0, disabled: 0, enabled: 0, text: 0 };
+    let lastChange = 0;
+    let leftPage = false;
+    const counted = (node) => node.nodeType === 1 && !IGNORED_TAGS.has(node.tagName) && !_isOurs(node);
+    const observer = new MutationObserver((records) => {
+        for (const r of records) {
+            if (_isOurs(r.target) || _changesByItself(r)) continue;
+            let seen = false;
+            if (r.type === "childList") {
+                const added = [...r.addedNodes].filter(counted).length;
+                const removed = [...r.removedNodes].filter(counted).length;
+                counts.added += added;
+                counts.removed += removed;
+                const textNodes = [...r.addedNodes, ...r.removedNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+                if (!added && !removed && textNodes) counts.text += 1;
+                seen = added || removed || textNodes;
+            } else if (r.type === "characterData") {
+                if (!r.target.textContent.trim() && !(r.oldValue || "").trim()) continue;   // spacing only
+                counts.text += 1;
+                seen = true;
+            } else if (r.type === "attributes") {
+                const now = r.target.getAttribute(r.attributeName);
+                const was = r.oldValue;
+                const on = (v) => v !== null && v !== "false";
+                if (now === was) continue;
+                if (r.attributeName === "aria-expanded" || r.attributeName === "open") {
+                    on(now) ? counts.opened++ : counts.closed++;
+                } else if (r.attributeName === "hidden" || r.attributeName === "aria-hidden") {
+                    on(now) ? counts.closed++ : counts.opened++;
+                } else if (r.attributeName === "disabled" || r.attributeName === "aria-disabled") {
+                    if (r.target.tagName === "INPUT" || r.target.tagName === "SELECT" || r.target.tagName === "TEXTAREA" ||
+                        r.target.tagName === "BUTTON") continue;   // counted from the control's own state below
+                    on(now) ? counts.disabled++ : counts.enabled++;
+                } else if (r.attributeName === "aria-checked" || r.attributeName === "aria-pressed") {
+                    now === "true" ? counts.ticked++ : counts.unticked++;
+                } else {
+                    counts.chosen++;
+                }
+                seen = true;
+            }
+            if (seen) lastChange = Date.now();
+        }
+    });
+    const onLeave = () => { leftPage = true; };
+    window.addEventListener("pagehide", onLeave);
+    window.addEventListener("beforeunload", onLeave);
+    // Changes made just before the action started were the page's own.
+    if (_byItselfObserver) _noteChangesByItself(_byItselfObserver.takeRecords());
+    _watchingAction++;
+    const before = _controlState();
+    const buttonsBefore = new Map([...document.querySelectorAll("button")].slice(0, 3000).map(b => [b, b.disabled]));
+    observer.observe(document.documentElement, {
+        subtree: true, childList: true, characterData: true, characterDataOldValue: true,
+        attributes: true, attributeOldValue: true, attributeFilter: CHANGE_ATTRIBUTES,
+    });
+
+    let result;
+    try {
+        result = await run();
+        const ended = Date.now();
+        while (!leftPage) {
+            const now = Date.now();
+            if (now - ended >= CHANGE_MAX_MS) break;
+            if (now - Math.max(ended, lastChange) >= CHANGE_QUIET_MS) break;
+            await new Promise(res => setTimeout(res, 50));
+        }
+    } finally {
+        observer.disconnect();
+        _watchingAction--;
+        if (_byItselfObserver && !_watchingAction) _byItselfObserver.takeRecords();   // made during the action
+        window.removeEventListener("pagehide", onLeave);
+        window.removeEventListener("beforeunload", onLeave);
+    }
+
+    for (const [el, was] of before) {
+        if (!el.isConnected) continue;
+        const value = el.isContentEditable ? el.textContent : el.value;
+        if (el.type === "checkbox" || el.type === "radio") {
+            if (!!el.checked !== was.checked) el.checked ? counts.ticked++ : counts.unticked++;
+        } else if (value !== was.value) {
+            _isTextBox(el) ? counts.typed++ : counts.chosen++;
+        }
+        if (!!el.disabled !== was.disabled) el.disabled ? counts.disabled++ : counts.enabled++;
+    }
+    for (const [b, was] of buttonsBefore) {
+        if (b.isConnected && b.disabled !== was) b.disabled ? counts.disabled++ : counts.enabled++;
+    }
+
+    const change = { changed: leftPage || Object.values(counts).some(n => n > 0), ...counts };
+    if (leftPage) change.left_page = true;
+    if (result && typeof result === "object") return { ...result, page_change: change };
+    return { success: !!result, page_change: change };
+}
+
 async function executeAction(action, args) {
+    if (!WATCHED_ACTIONS.has(action)) return _doAction(action, args);
+    return _watchChanges(() => _doAction(action, args));
+}
+
+async function _doAction(action, args) {
     if (action === "click_at" || action === "click" || action === "left_click") {
         const { x, y } = _scaleCoords(args);
         return window.udaa.performClick(x, y);
@@ -507,12 +690,225 @@ async function executeAction(action, args) {
         }
         return false;
     }
+
+    // ── Actions by element number (from page_map.js) ──────────────────────
+    const byId = await _runElementAction(action, args);
+    if (byId !== undefined) return byId;
     return false;
+}
+
+function _gone(id) {
+    return { success: false, stale: true, detail: `Element ${id} is no longer on the page.` };
+}
+
+function _center(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+async function _bringIntoView(el) {
+    const r = el.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > window.innerHeight || r.left < 0 || r.right > window.innerWidth) {
+        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+        await new Promise(res => setTimeout(res, 120));
+    }
+}
+
+// Click a specific element with the full pointer/mouse sequence that
+// React, Vue and plain pages all listen for.
+function _clickElement(el) {
+    const { x, y } = _center(el);
+    if (window.udaaOverlay) window.udaaOverlay.drawHighlight(x, y);
+    const init = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1 };
+    el.dispatchEvent(new PointerEvent("pointerdown", init));
+    el.dispatchEvent(new MouseEvent("mousedown", init));
+    if (typeof el.focus === "function") el.focus({ preventScroll: true });
+    el.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("click", { ...init, buttons: 0 }));
+    window.udaaLastClickedElement = el;
+    window._udaaLastClickX = x;
+    window._udaaLastClickY = y;
+}
+
+function _matchOption(options, wanted) {
+    const needle = (wanted || "").toLowerCase().trim();
+    const text = (o) => (o.text || o.textContent || "").toLowerCase().trim();
+    return options.find(o => text(o) === needle || (o.value || "").toLowerCase() === needle)
+        || options.find(o => text(o).startsWith(needle))
+        || options.find(o => text(o).includes(needle));
+}
+
+const _KEYS = {
+    enter: ["Enter", 13], escape: ["Escape", 27], esc: ["Escape", 27], tab: ["Tab", 9],
+    backspace: ["Backspace", 8], delete: ["Delete", 46], space: [" ", 32],
+    arrowdown: ["ArrowDown", 40], down: ["ArrowDown", 40], arrowup: ["ArrowUp", 38], up: ["ArrowUp", 38],
+    arrowleft: ["ArrowLeft", 37], left: ["ArrowLeft", 37], arrowright: ["ArrowRight", 39], right: ["ArrowRight", 39],
+    pagedown: ["PageDown", 34], pageup: ["PageUp", 33], home: ["Home", 36], end: ["End", 35],
+};
+
+async function _runElementAction(action, args) {
+    const page = window.handoffPage;
+    if (!page) return action.startsWith("page_") || ["read_text", "search_results", "pull_items"].includes(action) ? { success: false, detail: "Page reader not loaded." } : undefined;
+
+    if (action === "page_map") {
+        return { success: true, page: page.map() };
+    }
+    if (action === "read_text") {
+        return { success: true, ...page.readText(args.max_chars || undefined) };
+    }
+    if (action === "pull_items") {
+        return { success: true, ...page.pullItems(args.about || "") };
+    }
+    if (action === "search_results") {
+        return { success: true, ...page.searchResults(args.max || undefined) };
+    }
+    if (action === "go_back") {
+        history.back();
+        return true;
+    }
+
+    if (action === "click_element") {
+        const el = page.element(args.element_id);
+        if (!el) return _gone(args.element_id);
+        await _bringIntoView(el);
+        _clickElement(el);
+        return true;
+    }
+
+    if (action === "type_text") {
+        let el = page.element(args.element_id);
+        if (!el) return _gone(args.element_id);
+        if (!_isTypeable(el)) {
+            // A wrapper was picked: use the box inside it, or what clicking it opens.
+            el = el.querySelector("input:not([type=hidden]), textarea, [contenteditable=true], [contenteditable='']")
+                || (await (async () => { _clickElement(el); return _watchForNewInput(800); })());
+            if (!el) return { success: false, detail: "That element can't be typed into." };
+        }
+        await _bringIntoView(el);
+        _clickElement(el);
+        if (args.clear !== false) _setInputValue(el, "");
+        _setInputValue(el, args.text || "");
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        if (args.submit) {
+            await new Promise(res => setTimeout(res, 80));
+            _fireEnter(el);
+        }
+        return true;
+    }
+
+    if (action === "choose_option") {
+        const el = args.element_id != null ? page.element(args.element_id) : null;
+        if (args.element_id != null && !el) return _gone(args.element_id);
+        if (el && el.tagName === "SELECT") {
+            const opt = _matchOption([...el.options], args.text);
+            if (!opt) return { success: false, detail: `No option like "${args.text}" in that dropdown.`, options: [...el.options].slice(0, 30).map(o => o.text.trim()) };
+            if (el.value === opt.value) return { success: true, chosen: opt.text.trim(), already: true };
+            el.value = opt.value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { success: true, chosen: opt.text.trim() };
+        }
+        if (el) {
+            // Custom dropdown: open it, then look for the option.
+            await _bringIntoView(el);
+            _clickElement(el);
+            await new Promise(res => setTimeout(res, 350));
+        }
+        const option = _findDropdownOption(args.text);
+        if (!option) return { success: false, detail: `Could not find an option like "${args.text}".` };
+        await _bringIntoView(option);
+        _clickElement(option);
+        return { success: true, chosen: (option.textContent || "").trim().slice(0, 80) };
+    }
+
+    if (action === "set_checked") {
+        const el = page.element(args.element_id);
+        if (!el) return _gone(args.element_id);
+        const now = !!(el.checked || el.getAttribute("aria-checked") === "true");
+        if (now === !!args.checked) return { success: true, already: true };
+        await _bringIntoView(el);
+        _clickElement(el);
+        return true;
+    }
+
+    if (action === "press_key") {
+        const name = String(args.key || "").toLowerCase().replace(/\s+/g, "");
+        const [key, code] = _KEYS[name] || [args.key, 0];
+        const target = document.activeElement || document.body;
+        if (key === "Enter") {
+            _fireEnter(target);
+            return true;
+        }
+        for (const type of ["keydown", "keyup"]) {
+            target.dispatchEvent(new KeyboardEvent(type, { key, code: key, keyCode: code, which: code, bubbles: true, cancelable: true }));
+        }
+        if (key === "Escape" && typeof target.blur === "function") target.blur();
+        return true;
+    }
+
+    if (action === "scroll_page") {
+        const amount = Math.max(1, Math.min(10, Number(args.amount) || 3));
+        const dir = (args.direction || "down").toLowerCase();
+        const step = 0.8 * window.innerHeight * (amount / 3);
+        const dy = dir === "down" ? step : dir === "up" ? -step : 0;
+        const dx = dir === "right" ? step : dir === "left" ? -step : 0;
+        let target = window;
+        if (args.element_id != null) {
+            const el = page.element(args.element_id);
+            if (!el) return _gone(args.element_id);
+            target = _findScrollableContainer(el) || (el.scrollHeight > el.clientHeight ? el : window);
+        }
+        target.scrollBy({ left: dx, top: dy, behavior: "instant" });
+        return true;
+    }
+
+    return undefined;
 }
 
 
 
+// ── Noticing the user ──────────────────────────────────────────────────────
+// While a task runs, a real click or key press in this tab means the user is
+// using the page, so HandOff should pause. HandOff's own clicks and keys are
+// made by this script, which the browser marks as not trusted.
+// (If real input via chrome.debugger is added later, it will be trusted too
+// and must be told apart from the user's.)
+const STATUS_WORDS = {
+    "thinking": "Thinking about what to do next...",
+    "waiting": "Just a moment, waiting my turn...",
+    "executing": "Working on it...",
+    "navigating": "Going to a new page...",
+    "confirming": "Double checking with you...",
+    "idle": "Ready to help",
+    "error": "Oops, something went wrong",
+    "completed": "Finished helping with this task.",
+    "cancelled": "Stopped task."
+};
+const BUSY_STATUSES = new Set(["started", "thinking", "waiting", "executing", "navigating"]);
+let _taskBusy = false;
+let _lastUserReport = 0;
+
+function _noticeUser(event) {
+    if (!event.isTrusted || !_taskBusy) return;
+    if (event.target && event.target.closest && event.target.closest("#udaa-status-banner")) return;
+    const now = Date.now();
+    if (now - _lastUserReport < 2000) return;
+    _lastUserReport = now;
+    try {
+        chrome.runtime.sendMessage({ type: "USER_INPUT", kind: event.type });
+    } catch (e) {
+        // extension reloaded; nothing to tell
+    }
+}
+document.addEventListener("mousedown", _noticeUser, true);
+document.addEventListener("keydown", _noticeUser, true);
+
 window.udaa = {
+    // Lets a test page (or DevTools) run an action the way the backend would.
+    runAction: (action, args = {}) => executeAction(action, { action, ...args }),
+
     getDOMSnapshot: () => {
         return document.documentElement.outerHTML;
     },
@@ -751,39 +1147,39 @@ window.udaa = {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "EXECUTE_ACTION") {
         (async () => {
-            let success = false;
+            let result = false;
             try {
-                success = await executeAction(
+                result = await executeAction(
                     request.payload.action,
                     request.payload.args
                 );
             } catch (e) {
                 console.error("UDAA execution error:", e);
-                sendResponse({ success: false, detail: e.toString() });
+                sendResponse({ success: false, action: request.payload.action, detail: e.toString() });
                 return;
             }
-            sendResponse({ success, action: request.payload.action });
+            // Actions return either true/false or an object with data (url, page map, text...).
+            // Objects are spread into the reply so the backend can read e.g. result.url.
+            if (result && typeof result === "object") {
+                sendResponse({ success: result.success !== false, ...result, action: request.payload.action });
+            } else {
+                sendResponse({ success: !!result, action: request.payload.action });
+            }
         })();
         return true;  // CRITICAL: keeps message channel open for async response
     } else if (request.type === "UDAA_STATUS") {
         if (request.payload) {
             const status = request.payload.status;
+            _taskBusy = BUSY_STATUSES.has(status);
+            _watchPageBetweenActions(_taskBusy);
             const isGP = request.payload.grandparents_mode;
-            let msg = request.payload.message ? `UDAA: ${request.payload.message}` : status.toUpperCase();
+            // The banner shows the HandOff name itself; this is just what it's
+            // doing, in plain words (never a bare status like "EXECUTING").
+            let msg = request.payload.message || STATUS_WORDS[status] || "Working on it...";
 
             if (isGP) {
-                const GP_COPY = {
-                    "thinking": "Thinking about what to do next...",
-                    "executing": "Working on it...",
-                    "navigating": "Going to a new page...",
-                    "confirming": "Double checking with you...",
-                    "idle": "Ready to help",
-                    "error": "Oops, something went wrong",
-                    "completed": "Finished helping with this task.",
-                    "cancelled": "Stopped task."
-                };
-                if (GP_COPY[status]) {
-                    msg = GP_COPY[status];
+                if (STATUS_WORDS[status]) {
+                    msg = STATUS_WORDS[status];
                 } else if (request.payload.message && status !== "completed") {
                     // Fallback to the natural language summary sent by the backend
                     msg = request.payload.message;
@@ -825,7 +1221,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     document.body.appendChild(banner);
                 }
 
-                banner.textContent = msg;
+                banner.textContent = `HandOff: ${msg}`;
                 if (type === 'active') {
                     banner.style.border = "2px solid #00f2fe";
                     banner.style.color = "#00f2fe";
@@ -833,7 +1229,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     banner.style.border = "2px solid #2ecc71";
                     banner.style.color = "#2ecc71";
                     banner.style.animation = 'none';
-                    banner.textContent = msg;
+                    banner.textContent = `HandOff: ${msg}`;
                     // Wait 4s so user can read it, THEN remove
                     setTimeout(() => { if (banner && banner.parentNode) banner.remove(); }, 4000);
                 } else {
@@ -872,7 +1268,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     banner.style.boxShadow = "0 4px 15px rgba(0,0,0,0.5)";
                     document.body.appendChild(banner);
                 }
-                banner.textContent = msg;
+                banner.textContent = `HandOff: ${msg}`;
                 banner.style.color = "#00f2fe";
                 banner.style.border = "2px solid #00f2fe";
             }
@@ -880,7 +1276,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-if (!window.__udaaConnectInitialized) {
+// Only the top page connects and shows badges; frames just read and act.
+if (window === window.top && !window.__udaaConnectInitialized) {
     window.__udaaConnectInitialized = true;
 
     // Auto-connect flow: check if a session ID was passed via URL or injected by Playwright
@@ -913,10 +1310,10 @@ setTimeout(() => {
     const sensitiveDomains = ["accounts.google.com", ".bank", "paypal.com", "stripe.com", "login", "signin", "auth", "checkout", "pay."];
     const url = window.location.href.toLowerCase();
 
-    if (sensitiveDomains.some(d => url.includes(d)) && !document.getElementById("udaa-security-badge")) {
+    if (window === window.top && sensitiveDomains.some(d => url.includes(d)) && !document.getElementById("udaa-security-badge")) {
         const badge = document.createElement("div");
         badge.id = "udaa-security-badge";
-        badge.innerHTML = "🔒 <b>Secure Page</b> &nbsp;|&nbsp; UDAA respects your privacy here.";
+        badge.innerHTML = "🔒 <b>HandOff</b> &nbsp;|&nbsp; This is a sign-in or payment page.";
         badge.style.position = "fixed";
         badge.style.top = "20px";
         badge.style.left = "50%";

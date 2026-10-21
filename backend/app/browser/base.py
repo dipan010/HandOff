@@ -1,4 +1,4 @@
-"""Base interface for all browser adapters."""
+"""What every browser adapter must provide."""
 
 from typing import Any
 from abc import ABC, abstractmethod
@@ -9,7 +9,7 @@ class BrowserAdapter(ABC):
     @property
     @abstractmethod
     def page(self):
-        """Return the underlying page object if applicable (used for Playwright specific raw ops like initial goto)."""
+        """Return a direct page handle if the adapter has one, otherwise None."""
         pass
 
     @abstractmethod

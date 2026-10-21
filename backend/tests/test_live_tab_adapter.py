@@ -1,55 +1,22 @@
-"""Tests for app.browser_adapters.live_browser_adapter."""
+"""Tests for app.browser.live_tab (formerly app.browser_adapters.live_browser_adapter).
+
+Screenshots now come from the extension on request (see test_live_view.py), so
+the old frame-stream tests (update_screenshot, capture_screenshot) are gone."""
 
 import asyncio
-import base64
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.browser_adapters.live_browser_adapter import LiveBrowserAdapter
+from app.browser.live_tab import LiveBrowserAdapter
+from app.websocket import manager as ws_manager
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    # Actions wait for a connected extension; pretend one is there.
+    monkeypatch.setitem(ws_manager.extension_connections, "test-session", object())
     return LiveBrowserAdapter("test-session")
-
-
-class TestUpdateScreenshot:
-    def test_decodes_and_stores_frame(self, adapter):
-        raw = b"\x89PNG\r\n\x1a\nFAKE"
-        b64 = base64.b64encode(raw).decode()
-        adapter.update_screenshot(b64)
-        assert adapter._latest_screenshot_bytes == raw
-        assert adapter._latest_screenshot_time > 0
-
-    def test_invalid_base64_does_not_crash(self, adapter):
-        adapter.update_screenshot("not!valid!base64!!!")
-        # Logs an error but doesn't raise — adapter must stay usable
-        assert adapter._latest_screenshot_bytes is None
-
-
-class TestCaptureScreenshot:
-    async def test_returns_existing_frame_when_fresh(self, adapter):
-        raw = b"fakeimage"
-        adapter._latest_screenshot_bytes = raw
-        adapter._latest_screenshot_time = 100.0
-        result = await adapter.capture_screenshot(min_timestamp=50.0)
-        assert result == raw
-
-    async def test_returns_none_when_no_frame_ever(self, adapter):
-        # No screenshot has ever arrived, short-circuit the spin loop
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await adapter.capture_screenshot(min_timestamp=0)
-        assert result is None
-
-    async def test_returns_latest_on_stale_timeout(self, adapter):
-        """When min_timestamp can't be satisfied but we have ANY frame, return it."""
-        raw = b"stale-frame"
-        adapter._latest_screenshot_bytes = raw
-        adapter._latest_screenshot_time = 10.0  # older than min_timestamp
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await adapter.capture_screenshot(min_timestamp=100.0)
-        assert result == raw  # falls back to latest, not None
 
 
 class TestCompleteAction:

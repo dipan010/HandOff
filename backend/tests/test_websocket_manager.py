@@ -1,10 +1,17 @@
 """Tests for app.websocket.ConnectionManager — message routing and shape."""
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.websockets import WebSocketState
 
 from app.websocket import ConnectionManager
+
+
+def sent_message(ws):
+    """The last message sent: every message goes out as JSON text."""
+    return json.loads(ws.send_text.call_args.args[0])
 
 
 @pytest.fixture
@@ -18,6 +25,8 @@ def mock_ws():
     ws.accept = AsyncMock()
     ws.send_json = AsyncMock()
     ws.send_text = AsyncMock()
+    ws.client_state = WebSocketState.CONNECTED
+    ws.application_state = WebSocketState.CONNECTED
     return ws
 
 
@@ -57,7 +66,7 @@ class TestMessageShapes:
     async def test_send_screenshot_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_screenshot("s", "BASE64DATA", 3)
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "screenshot_update"
         assert sent["data"]["screenshot"] == "BASE64DATA"
         assert sent["data"]["step"] == 3
@@ -65,7 +74,7 @@ class TestMessageShapes:
     async def test_send_action_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_action("s", {"action": "click_at", "success": True}, 2)
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "action_executed"
         assert sent["data"]["action"]["action"] == "click_at"
         assert sent["data"]["step"] == 2
@@ -73,13 +82,14 @@ class TestMessageShapes:
     async def test_send_narration_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_narration("s", "Hello there.")
-        sent = mock_ws.send_json.call_args.args[0]
-        assert sent == {"type": "narration", "data": {"text": "Hello there."}}
+        sent = sent_message(mock_ws)
+        # speak: whether the dashboard reads it aloud (False while the narrator speaks it)
+        assert sent == {"type": "narration", "data": {"text": "Hello there.", "speak": True}}
 
     async def test_send_audio_narration_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_audio_narration("s", "AUDIO_B64")
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "audio_narration"
         assert sent["data"]["audio"] == "AUDIO_B64"
         assert sent["data"]["sample_rate"] == 24000
@@ -89,25 +99,27 @@ class TestMessageShapes:
         await manager.connect("s", mock_ws)
         # No extension connected — should not raise
         await manager.send_action_preview("s", "click the search box")
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "action_preview"
         assert sent["data"]["text"] == "click the search box"
 
     async def test_send_action_preview_also_notifies_extension(self, manager, mock_ws):
         ext_ws = AsyncMock()
-        ext_ws.send_json = AsyncMock()
+        ext_ws.send_text = AsyncMock()
+        ext_ws.client_state = WebSocketState.CONNECTED
+        ext_ws.application_state = WebSocketState.CONNECTED
         await manager.connect("s", mock_ws)
         await manager.connect_extension("s", ext_ws)
         await manager.send_action_preview("s", "click")
-        ext_ws.send_json.assert_awaited()
-        sent_to_ext = ext_ws.send_json.call_args.args[0]
+        ext_ws.send_text.assert_awaited()
+        sent_to_ext = sent_message(ext_ws)
         assert sent_to_ext["type"] == "action_preview"
         assert sent_to_ext["text"] == "click"
 
     async def test_send_status_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_status("s", "thinking", "Step 1: Analyzing screen", False)
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "status_update"
         assert sent["data"]["status"] == "thinking"
         assert sent["data"]["detail"] == "Step 1: Analyzing screen"
@@ -115,21 +127,21 @@ class TestMessageShapes:
     async def test_send_safety_confirm_includes_request_id(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_safety_confirm("s", {"action": "pay"}, "req-123")
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "safety_confirm"
         assert sent["data"]["request_id"] == "req-123"
 
     async def test_send_task_complete_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_task_complete("s", "All done summary")
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "task_complete"
         assert sent["data"]["summary"] == "All done summary"
 
     async def test_send_error_shape(self, manager, mock_ws):
         await manager.connect("s", mock_ws)
         await manager.send_error("s", "Something broke")
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "error"
         assert sent["data"]["message"] == "Something broke"
 
@@ -137,7 +149,7 @@ class TestMessageShapes:
         await manager.connect("s", mock_ws)
         data = {"reason": "login", "prompt": "Sign in please", "needs_input": False}
         await manager.send_pause_prompt("s", data)
-        sent = mock_ws.send_json.call_args.args[0]
+        sent = sent_message(mock_ws)
         assert sent["type"] == "pause_prompt"
         assert sent["data"] == data
 
@@ -147,22 +159,25 @@ class TestSendFailureHandling:
         # No connection registered — calling send should silently no-op
         await manager.send_narration("ghost", "hi")  # no exception
 
-    async def test_send_failure_disconnects(self, manager):
+    async def test_send_failure_on_a_closed_socket_disconnects(self, manager):
+        # One failed message alone doesn't cut the dashboard off (test_websocket.py);
+        # a failure on a socket that has closed does.
         ws = AsyncMock()
         ws.accept = AsyncMock()
-        ws.send_json = AsyncMock(side_effect=Exception("connection reset"))
+        ws.send_text = AsyncMock(side_effect=Exception("connection reset"))
         await manager.connect("s", ws)
+        ws.client_state = WebSocketState.DISCONNECTED
         await manager.send_narration("s", "test")
-        # Failure should evict the connection
         assert "s" not in manager.active_connections
 
 
 class TestExtensionSendFailure:
-    async def test_extension_send_failure_disconnects(self, manager):
+    async def test_extension_send_failure_on_a_closed_socket_disconnects(self, manager):
         ws = AsyncMock()
         ws.accept = AsyncMock()
-        ws.send_json = AsyncMock(side_effect=Exception("dead"))
+        ws.send_text = AsyncMock(side_effect=Exception("dead"))
         await manager.connect_extension("s", ws)
+        ws.client_state = WebSocketState.DISCONNECTED
         await manager.send_to_extension("s", {"type": "ping"})
         assert "s" not in manager.extension_connections
 

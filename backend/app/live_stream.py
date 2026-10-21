@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
-from app.browser_adapters.base_adapter import BrowserAdapter
+from app.browser.base import BrowserAdapter
 from app.websocket import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -21,22 +21,48 @@ NARRATION_SCREENSHOT_INTERVAL = 6.0   # seconds between screenshots sent to Live
 MIN_NARRATION_GAP             = 5.0   # minimum seconds between narration text sends
 ACTION_NARRATION_COOLDOWN     = 4.0   # suppress narration for N seconds after an action
 
+# Say only what has happened: the narrator is told about each action as it
+# starts, and sees the screen now and then. Guessing ahead made it announce
+# pages that weren't open yet.
+STICK_TO_WHAT_HAPPENED = (
+    "Only describe what HandOff has told you it is doing, or what the latest screenshot shows. "
+    "Never say a page is open or something is done until HandOff says so or the screenshot shows it. "
+    "When HandOff tells you what it is about to do, say it as happening now (\"Opening turing.ac.uk now\")."
+)
+
 NARRATION_PROMPT_GRANDPARENTS = (
-    "You are a friendly, patient accessibility companion helping a senior citizen use a computer. "
-    "You observe their screen and gently explain what the automated helper is doing in very simple, "
+    "You are a friendly, patient companion helping a senior citizen use a computer. "
+    "You gently explain what HandOff, the helper, is doing in very simple, "
     "reassuring terms. Focus on comfort and clarity. Speak directly to them like a helpful grandchild. "
-    "Keep sentences short and slow-paced. Never use technical jargon like 'agent', 'URL', 'clicking', 'DOM', or 'UI'. "
-    "Example: 'I'm opening up the train booking website for you now. Just give me a moment to find the right page.'"
+    "Keep sentences short and slow-paced. Never use technical words like 'URL', 'clicking', 'DOM', or 'UI'. "
+    "Example: 'I'm opening up the train booking website for you now. Just give me a moment.' "
+    + STICK_TO_WHAT_HAPPENED
 )
 
 NARRATION_PROMPT_DEFAULT = (
-    "You are a real-time screen narrator for a digital accessibility agent. "
-    "You observe screenshots of a web browser and describe what you see "
-    "in simple, clear language. Focus on: what is currently on screen, "
-    "what the agent is doing, and what will happen next. "
+    "You narrate what HandOff, a helper that works in a web browser, is doing, "
+    "in simple, clear language. "
     "Keep narrations short (1-2 sentences). "
-    "Use friendly, encouraging language."
+    "Use friendly, encouraging language. "
+    + STICK_TO_WHAT_HAPPENED
 )
+
+
+class Narrator:
+    """The Live session, plus when its voice last sent audio, so HandOff can
+    wait for speech to start before doing what it describes."""
+
+    def __init__(self, session):
+        self.session = session
+        self.last_audio = 0.0
+
+    async def send_client_content(self, **kwargs):
+        return await self.session.send_client_content(**kwargs)
+
+
+def opening_line(task: str) -> str:
+    return (f"The user asked HandOff to: {task}. Nothing has been done yet; "
+            "HandOff will tell you about each step as it starts.")
 
 
 async def run_live_stream(
@@ -47,7 +73,6 @@ async def run_live_stream(
     last_action_time_ref: list | None = None,
     completion_text_ref: list | None = None,
     live_session_ref: list | None = None,
-    screenshot_queue: asyncio.Queue | None = None,
 ):
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
     prompt_text = NARRATION_PROMPT_GRANDPARENTS if grandparents_mode else NARRATION_PROMPT_DEFAULT
@@ -73,15 +98,16 @@ async def run_live_stream(
         ) as session:
             logger.info(f"Live API session started (audio mode) for {session_id}")
 
-            # Store so agent loop can push action narration into it
-            if live_session_ref is not None:
-                live_session_ref[0] = session
-
             await session.send_client_content(
                 turns=types.Content(
-                    parts=[types.Part(text=f"The user wants to: {task}")]
+                    parts=[types.Part(text=opening_line(task))]
                 )
             )
+
+            # Only now let the task talk to it, so the task is the first thing it hears.
+            narrator = Narrator(session)
+            if live_session_ref is not None:
+                live_session_ref[0] = narrator
 
             # ── Narration state ───────────────────────────────────────────────
             last_narration_time = 0.0
@@ -93,6 +119,7 @@ async def run_live_stream(
                         async for response in session.receive():
                             # Audio chunk → queue on frontend
                             if response.data:
+                                narrator.last_audio = time.time()
                                 audio_b64 = base64.b64encode(response.data).decode("utf-8")
                                 await ws_manager.send_audio_narration(session_id, audio_b64)
 
@@ -121,7 +148,7 @@ async def run_live_stream(
                                             if now - last_narration_time < MIN_NARRATION_GAP:
                                                 continue
 
-                                            await ws_manager.send_narration(session_id, part.text)
+                                            await ws_manager.send_narration(session_id, part.text, speak=False)
                                             last_narration_time = now
                             except AttributeError as attr_err:
                                 logger.debug(f"Narration response attribute error: {attr_err}")
@@ -133,8 +160,9 @@ async def run_live_stream(
 
             receiver = asyncio.create_task(receive_narration())
 
-            try:  # inner try ensures receiver is always cancelled in finally
+            try:
                 last_screenshot_hash = None
+                screenshot_error_logged = False
 
                 while True:
                     # Check if agent flagged completion
@@ -147,45 +175,23 @@ async def run_live_stream(
                             if grandparents_mode
                             else f"Task complete. {summary}"
                         )
+                        # Inject the result — Gemini will speak it in the same voice
                         await session.send_client_content(
-                            turns=types.Content(parts=[types.Part(text=speak_text)])
-                        )
-                        await asyncio.sleep(3.5)  # let audio generate before stream cancels
-                        break
-
-                    # ── Screenshot source ────────────────────────────────────
-                    # Prefer orchestrator-provided frames (same frame the agent
-                    # is analysing) over an independent capture loop.  Fall back
-                    # to direct capture only when no queue is wired (e.g. tests).
-                    screenshot_bytes: bytes | None = None
-                    if screenshot_queue is not None:
-                        try:
-                            # Wait up to NARRATION_SCREENSHOT_INTERVAL for a new
-                            # frame; if nothing arrives the agent is idle/thinking
-                            # so we stay quiet rather than repeating stale frames.
-                            screenshot_bytes = await asyncio.wait_for(
-                                screenshot_queue.get(),
-                                timeout=NARRATION_SCREENSHOT_INTERVAL,
+                            turns=types.Content(
+                                parts=[types.Part(text=speak_text)]
                             )
-                        except asyncio.TimeoutError:
-                            # No new frame from orchestrator — agent is still
-                            # thinking or waiting.  Just re-check completion and loop.
-                            continue
-                    else:
-                        # Legacy fallback: capture independently
-                        if not browser.page:
-                            await asyncio.sleep(1)
-                            continue
-                        try:
-                            screenshot_bytes = await browser.capture_screenshot()
-                        except Exception as e:
-                            logger.debug(f"Fallback screenshot error: {e}")
-                        await asyncio.sleep(NARRATION_SCREENSHOT_INTERVAL)
-
-                    if not screenshot_bytes:
-                        continue
+                        )
+                        await asyncio.sleep(3.5)  # let audio generate and queue before stream cancels
+                        break                     # exit cleanly — agent is done
 
                     try:
+                        screenshot_bytes = await browser.capture_screenshot()
+                        if not screenshot_bytes:
+                            # Extension hasn't sent a frame yet.
+                            await asyncio.sleep(1)
+                            continue
+
+                        # Fix #3: Only send if screen actually changed
                         current_hash = hashlib.md5(screenshot_bytes).hexdigest()
                         if current_hash != last_screenshot_hash:
                             await session.send_realtime_input(
@@ -195,23 +201,28 @@ async def run_live_stream(
                                 )
                             )
                             last_screenshot_hash = current_hash
-                            logger.debug("Live stream: sent new frame to Live API")
                         else:
-                            logger.debug("Live stream: frame unchanged, skipping")
+                            logger.debug("Screenshot unchanged — skipping narration input")
+
                     except Exception as e:
-                        logger.debug(f"Screenshot stream error: {e}")
+                        # Warn once, then stay quiet so the log isn't flooded.
+                        if not screenshot_error_logged:
+                            logger.warning(f"Could not send screenshot to narration: {e}")
+                            screenshot_error_logged = True
+                        else:
+                            logger.debug(f"Screenshot stream error: {e}")
+
+                    await asyncio.sleep(NARRATION_SCREENSHOT_INTERVAL)
 
             except asyncio.CancelledError:
                 logger.info(f"Live stream cancelled for {session_id}")
-            except Exception as loop_err:
-                logger.error(f"Live stream loop error: {loop_err}")
             finally:
                 receiver.cancel()
                 if live_session_ref is not None:
                     live_session_ref[0] = None
                 try:
                     await receiver
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
                     pass
 
     except Exception as e:

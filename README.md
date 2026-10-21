@@ -1,31 +1,27 @@
 # Universal Digital Accessibility Agent (HandOff) ☸️
 
-**HandOff** is an AI-powered co-pilot designed to become the "hands on screen" for users with accessibility needs. By combining **Gemini 2.5 Computer Use** for visual navigation and **gemini-2.5-flash-native-audio** for real-time narration, HandOff bridge the gap between user intent and complex digital interfaces.
-
-Built for the **Gemini Live Agent Challenge** under the **UI Navigator** category.
+**HandOff** is an assistant that acts as the "hands on screen" for people who find websites hard to use. You tell it what you want; it clicks, types and scrolls in your own Chrome while describing out loud what it is doing. It uses **Gemini 2.5 Computer Use** to decide what to do on screen and **Gemini Live (native audio)** to talk you through it.
 
 ---
 
 ## 🌟 Key Features
 
-- **Double-Agent Loop (Remote + Live)**: 
-    - **Remote Mode**: Uses Playwright for an isolated, sandboxed experience.
-    - **Live Mode**: Pilots the user's *actual* browser via a Chrome Extension—perfect for Netflix, YouTube, or WhatsApp where you're already logged in.
+- **Works in your own browser**: A Chrome extension lets HandOff operate the Chrome you already use, so sites where you are signed in (Netflix, YouTube, WhatsApp) just work.
 - **Patience Mode 🐢**: When enabled, the agent slows down its reaction time and waits longer for pages to settle—ideal for slow connections or heavy sites.
 - **Grandparents Mode 👵**: Replaces technical logs with warm, first-person narration (e.g., "I'm looking for your recipe now!").
-- **Visual-First Intelligence**: Interprets screens purely through images using `gemini-2.5-computer-use-preview`.
+- **Reads the screen from screenshots**: Decides where to click from screenshots using `gemini-2.5-computer-use-preview`.
 - **Real-Time Narration**: Summarizes every action as it happens via `gemini-2.5-flash-native-audio`.
-- **Safety First**: Built-in "Require Confirmation" system stops the AI before performing sensitive actions like payments.
+- **Asks before risky actions**: HandOff stops and asks you before payments, sign-ins and other sensitive steps.
 
 ---
 
 ## 🛠 Tech Stack
 
-- **AI**: Gemini Multi-modal (Computer Use), Gemini Live (Narration)
-- **Frontend**: Next.js 15, TypeScript, Vanilla CSS (Premium Dark Mode)
-- **Backend**: FastAPI, Python 3.11, Playwright (Remote Engine)
-- **Integration**: Chrome Manifest V3 Extension (Live Engine)
-- **Infrastructure**: Designed for Google Cloud Run & Firestore
+- **Models**: Gemini 2.5 Computer Use (actions), Gemini Live native audio (narration)
+- **Frontend**: Next.js 15, TypeScript, Tailwind CSS
+- **Backend**: FastAPI, Python 3.11
+- **Browser control**: Chrome Manifest V3 extension
+- **Storage**: Local files by default; Firestore when `USE_FIRESTORE=true`
 
 ---
 
@@ -35,18 +31,18 @@ Built for the **Gemini Live Agent Challenge** under the **UI Navigator** categor
 ```bash
 cd backend
 python -m venv venv
+# macOS / Linux:
+source venv/bin/activate
 # Windows:
 .\venv\Scripts\activate
-# Install deps:
 pip install -r requirements.txt
-playwright install chromium
+cp .env.example .env   # then set GOOGLE_API_KEY
+python -m app.main     # serves on http://127.0.0.1:8080
 ```
-Create `backend/.env` with your `GOOGLE_API_KEY`.
 
-**Run (Windows Warning: Do not use --reload if using Remote Mode):**
-```bash
-.\venv\Scripts\python.exe -m app.main
-```
+Run the tests with `python -m pytest` from `backend/`.
+
+**How tasks run.** By default (`TASK_FLOW=steps`) HandOff first decides whether a request is simple chat (answered straight away, no browser) or a task. For tasks it writes a short list of steps, works through them one action at a time, checks after each action that something actually changed, and checks each finished step against the screen. If a step keeps failing it rewrites the remaining steps. Set `TASK_FLOW=classic` in `backend/.env` to go back to the original single loop. The models used for sorting, planning and checking are set with `SORT_MODEL`, `FAST_MODEL`, `STRONG_MODEL` and `BACKUP_MODEL` (see `backend/.env.example`).
 
 ### 2. Frontend Setup
 ```bash
@@ -89,12 +85,3 @@ Execute these tasks in **Live Mode** to see the recent accuracy and synchronizat
     - The agent will use the search bar, type the query, and press Enter.
     - It will read the page content and provide a verbal/text summary of the founders.
     - This demonstrates the agent's ability to transition from "acting" to "interpreting" information.
-
----
-
-## 🏆 Hackathon Alignment: UI Navigator Track
-
-HandOff addresses the core requirements of the **UI Navigator** track by:
-1. **Becoming the user's hands**: Direct physical manipulation of the browser.
-2. **Visual Understanding**: Interpreting UI with or *without* DOM access (Live mode is 100% visual coordinate based).
-3. **Multimodal Core**: Every action is guided by the latest Gemini multimodal screenshot processing.

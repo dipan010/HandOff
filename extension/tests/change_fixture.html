@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Page change test</title></head>
+<body>
+  <main>
+    <button id="nothing">Does nothing</button>
+    <button id="add" onclick="for (let i = 0; i < 3; i++) { const li = document.createElement('li'); li.textContent = 'Row ' + i; document.getElementById('rows').appendChild(li); }">Add rows</button>
+    <ul id="rows"></ul>
+    <button id="menu" aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true'); document.getElementById('menu-list').hidden = false">Menu</button>
+    <ul id="menu-list" hidden><li>Settings</li></ul>
+    <label><input type="checkbox" id="news"> Send me news</label>
+    <label><input type="checkbox" id="terms" checked> I agree</label>
+    <input id="name" aria-label="Your name">
+    <button id="once" onclick="this.disabled = true">Send once</button>
+    <button id="pressed" onclick="this.classList.add('pressed')">Looks pressed</button>
+    <button id="later" onclick="setTimeout(() => { document.getElementById('note').textContent = 'Saved'; }, 100)">Save</button>
+    <p id="note"></p>
+    <span id="clock">0</span>
+  </main>
+  <pre id="out"></pre>
+  <script>
+    window.sentToExtension = [];
+    window.chrome = { runtime: {
+      onMessage: { addListener(fn) { window.pageListener = fn; } },
+      sendMessage(msg) { window.sentToExtension.push(msg); },
+    } };
+  </script>
+  <script src="../overlay.js"></script>
+  <script src="../page_map.js"></script>
+  <script src="../content_script.js"></script>
+  <script>
+    (async () => {
+      window.pageListener({ type: "UDAA_STATUS", payload: { status: "executing", message: "Working" } }, {}, () => {});
+      const ids = {};
+      for (const e of window.handoffPage.map().elements) ids[e.label] = e.id;
+      // A clock that ticks by itself, like a playing video's time or live prices:
+      // its changes are not the action's doing.
+      let ticks = 0;
+      const ticker = setInterval(() => { document.getElementById("clock").textContent = String(++ticks); }, 100);
+      await new Promise((res) => setTimeout(res, 600));
+      const run = window.udaa.runAction;
+      const change = async (action, args) => (await run(action, args)).page_change;
+      const results = {
+        nothing: await (async () => {
+          const start = Date.now();
+          const found = await change("click_element", { element_id: ids["Does nothing"] });
+          return { ...found, ms: Date.now() - start };
+        })(),
+        add: await change("click_element", { element_id: ids["Add rows"] }),
+        menu: await change("click_element", { element_id: ids["Menu"] }),
+        tick: await change("set_checked", { element_id: ids["Send me news"], checked: true }),
+        typed: await change("type_text", { element_id: ids["Your name"], text: "Asha", submit: false }),
+        once: await change("click_element", { element_id: ids["Send once"] }),
+        pressed: await change("click_element", { element_id: ids["Looks pressed"] }),
+        later: await change("click_element", { element_id: ids["Save"] }),
+        already: await run("set_checked", { element_id: ids["I agree"], checked: true }),
+      };
+      clearInterval(ticker);
+      document.getElementById("out").textContent = JSON.stringify(results);
+    })();
+  </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-export type AgentStatus = 'idle' | 'started' | 'navigating' | 'thinking' | 'executing' | 'confirming' | 'completed' | 'error' | 'timeout' | 'cancelled';
+export type AgentStatus = 'idle' | 'started' | 'navigating' | 'thinking' | 'waiting' | 'executing' | 'confirming' | 'completed' | 'error' | 'timeout' | 'cancelled';
 
 export interface Task {
     task: string;
@@ -36,4 +36,14 @@ export interface SessionInfo {
     status: string;
     created_at: string;
     summary?: string;
+}
+
+export type PlanStepState = 'waiting' | 'working' | 'retrying' | 'done' | 'failed';
+
+export interface PlanStep {
+    number: number;
+    title: string;
+    done_when: string;
+    state: PlanStepState;
+    detail?: string;
 }

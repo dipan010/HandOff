@@ -25,6 +25,7 @@ export function AgentStatusDisplay({
             case 'started': return 'Agent Initializing';
             case 'navigating': return 'Establishing Connection';
             case 'thinking': return 'Analyzing Visual Data';
+            case 'waiting': return 'Waiting a Moment';
             case 'executing': return 'Executing Operation';
             case 'confirming': return 'Require User Override';
             case 'completed': return 'Mission Accomplished';

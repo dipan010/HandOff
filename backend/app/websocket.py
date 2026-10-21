@@ -1,9 +1,11 @@
 """WebSocket connection manager and message routing."""
 
+import asyncio
 import json
 import logging
 from typing import Any
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 logger = logging.getLogger(__name__)
 
@@ -14,17 +16,64 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
         self.extension_connections: dict[str, WebSocket] = {}
+        # One send at a time per socket: narration audio, screenshots and
+        # status updates come from different tasks, and overlapping sends
+        # on one socket fail.
+        self._send_locks: dict[int, asyncio.Lock] = {}
+        # What a dashboard needs to redraw a running task after a reload or a
+        # network drop: the plan, each step's latest state, and the status.
+        self._replay: dict[str, dict] = {}
+
+    async def _send(self, ws: WebSocket, text: str):
+        lock = self._send_locks.setdefault(id(ws), asyncio.Lock())
+        async with lock:
+            await ws.send_text(text)
+
+    @staticmethod
+    def _closed(ws: WebSocket) -> bool:
+        return ws.client_state != WebSocketState.CONNECTED or ws.application_state != WebSocketState.CONNECTED
 
     async def connect(self, session_id: str, websocket: WebSocket):
-        """Accept and register a WebSocket connection."""
+        """Accept and register a WebSocket connection, and catch it up on a running task."""
         await websocket.accept()
         self.active_connections[session_id] = websocket
         logger.info(f"WebSocket connected: session={session_id}")
+        for message in self._replay_messages(session_id):
+            await self.send_message(session_id, message)
 
-    def disconnect(self, session_id: str):
-        """Remove a WebSocket connection."""
-        if session_id in self.active_connections:
+    def _remember(self, session_id: str, message: dict[str, Any]):
+        kind = message.get("type")
+        if kind == "plan":
+            replay = self._replay.setdefault(session_id, {})
+            if not (message.get("data") or {}).get("revision"):
+                replay.clear()        # a new task's plan: forget the old one
+            replay["plan"] = message
+            replay.setdefault("steps", {}).clear()
+        elif kind == "step_update" and session_id in self._replay:
+            number = (message.get("data") or {}).get("number")
+            self._replay[session_id].setdefault("steps", {})[number] = message
+        elif kind == "status_update" and session_id in self._replay:
+            if (message.get("data") or {}).get("status") in ("cancelled", "completed"):
+                self._replay.pop(session_id, None)
+            else:
+                self._replay[session_id]["status"] = message
+        elif kind in ("task_complete", "error"):
+            self._replay.pop(session_id, None)
+
+    def _replay_messages(self, session_id: str) -> list[dict]:
+        replay = self._replay.get(session_id) or {}
+        messages = [replay["plan"]] if "plan" in replay else []
+        messages += list((replay.get("steps") or {}).values())
+        if "status" in replay:
+            messages.append(replay["status"])
+        return messages
+
+    def disconnect(self, session_id: str, websocket: WebSocket | None = None):
+        """Remove a WebSocket connection (only `websocket`, if given, not a newer one)."""
+        current = self.active_connections.get(session_id)
+        if current is not None and (websocket is None or current is websocket):
             del self.active_connections[session_id]
+            self._send_locks.pop(id(current), None)
             logger.info(f"WebSocket disconnected: session={session_id}")
 
     def get_connection(self, session_id: str) -> WebSocket | None:
@@ -37,41 +86,45 @@ class ConnectionManager:
         self.extension_connections[session_id] = websocket
         logger.info(f"Extension WebSocket connected: session={session_id}")
 
-    def disconnect_extension(self, session_id: str):
-        """Remove an Extension WebSocket connection."""
-        if session_id in self.extension_connections:
+    def disconnect_extension(self, session_id: str, websocket: WebSocket | None = None):
+        """Remove an Extension WebSocket connection (only `websocket`, if given)."""
+        current = self.extension_connections.get(session_id)
+        if current is not None and (websocket is None or current is websocket):
             del self.extension_connections[session_id]
+            self._send_locks.pop(id(current), None)
             logger.info(f"Extension WebSocket disconnected: session={session_id}")
 
     async def send_to_extension(self, session_id: str, message: dict[str, Any]):
         """Send a JSON command to the Chrome Extension."""
+        await self._send_extension(session_id, message)
+
+    async def _send_extension(self, session_id: str, message: dict):
         ws = self.extension_connections.get(session_id)
         if ws:
             try:
-                await ws.send_json(message)
+                await self._send(ws, json.dumps(message))
             except Exception as e:
-                logger.error(f"Failed to send to extension {session_id}: {e}")
-                self.disconnect_extension(session_id)
+                logger.error(f"Failed to send to extension {session_id}: {e!r}")
+                if self._closed(ws):
+                    self.disconnect_extension(session_id, ws)
 
     async def broadcast_to_extension(self, session_id: str, message: dict):
         """Broadcast a message as JSON text to the Chrome Extension."""
-        ws = self.extension_connections.get(session_id)
-        if ws:
-            try:
-                await ws.send_text(json.dumps(message))
-            except Exception as e:
-                logger.error(f"Failed to broadcast to extension {session_id}: {e}")
-                self.disconnect_extension(session_id)
+        await self._send_extension(session_id, message)
 
     async def send_message(self, session_id: str, message: dict[str, Any]):
         """Send a JSON message to a specific session."""
+        self._remember(session_id, message)
         ws = self.active_connections.get(session_id)
         if ws:
             try:
-                await ws.send_json(message)
+                await self._send(ws, json.dumps(message))
             except Exception as e:
-                logger.error(f"Failed to send to session {session_id}: {e}")
-                self.disconnect(session_id)
+                # One failed message must not cut the dashboard off for good:
+                # forget the socket only if it has really closed.
+                logger.error(f"Failed to send to session {session_id}: {e!r}")
+                if self._closed(ws):
+                    self.disconnect(session_id, ws)
 
     async def send_screenshot(self, session_id: str, screenshot_b64: str, step: int):
         """Send a screenshot update to the frontend."""
@@ -93,11 +146,12 @@ class ConnectionManager:
             }
         })
 
-    async def send_narration(self, session_id: str, text: str):
-        """Send live narration text from the Live API."""
+    async def send_narration(self, session_id: str, text: str, speak: bool = True):
+        """Narration text for the dashboard. `speak` False: the narrator is
+        already saying it, so the dashboard only shows it (one voice)."""
         await self.send_message(session_id, {
             "type": "narration",
-            "data": {"text": text}
+            "data": {"text": text, "speak": speak}
         })
 
     async def send_audio_narration(self, session_id: str, audio_b64: str):
@@ -188,6 +242,28 @@ class ConnectionManager:
                 "message": "Waiting for your input...",
                 "grandparents_mode": False
             }
+        })
+
+    async def send_ack(self, session_id: str, text: str, speak: bool = True):
+        """A short reply straight after a task arrives ("Sure, opening that now")."""
+        await self.send_message(session_id, {"type": "ack", "data": {"text": text, "speak": speak}})
+
+    async def send_quick_reply(self, session_id: str, text: str):
+        """An answer that needed no browser work."""
+        await self.send_message(session_id, {"type": "quick_reply", "data": {"text": text}})
+
+    async def send_plan(self, session_id: str, steps: list[dict], revision: int = 0):
+        """The list of steps HandOff will follow (sent again after each re-plan)."""
+        await self.send_message(session_id, {
+            "type": "plan",
+            "data": {"steps": steps, "revision": revision},
+        })
+
+    async def send_step_update(self, session_id: str, number: int, state: str, detail: str = ""):
+        """Progress on one step: state is "working", "done", "retrying" or "failed"."""
+        await self.send_message(session_id, {
+            "type": "step_update",
+            "data": {"number": number, "state": state, "detail": detail},
         })
 
 # Singleton connection manager
