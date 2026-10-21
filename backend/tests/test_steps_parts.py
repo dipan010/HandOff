@@ -155,3 +155,23 @@ async def test_no_credit_is_not_retried_or_sent_to_backup():
     assert caller.models == ["fast"]
     assert not is_busy_error(RuntimeError("402 RESOURCE_EXHAUSTED prepayment"))
     assert is_busy_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+
+
+async def test_plans_fill_a_form_in_one_step_not_one_step_per_click():
+    # Live round, 2026-10-21: "fill in a flight from Delhi to Mumbai" was split
+    # into a step per click and suggestion, and never finished.
+    from tests.fakes import _prompt_text
+    prompts = []
+    caller = FakeCaller(plan=[{"steps": [{"title": "Fill in the flight", "done_when": "From and To are filled"}]}])
+    original = caller.ask
+
+    async def spy(model, contents, config=None):
+        prompts.append(_prompt_text(contents))
+        return await original(model, contents, config)
+
+    caller.ask = spy
+    await make_plan("on makemytrip, fill in a flight from Delhi to Mumbai", "", caller, "fast", "backup")
+    await revise_plan("fill in a flight", [], Step(1, "a", "b"), "stuck", "https://x", caller, "fast", "backup")
+    for prompt in prompts:
+        assert "Fill a whole form in one step" in prompt
+        assert "never one step per click" in prompt

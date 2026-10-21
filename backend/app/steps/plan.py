@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 6
 
+# Steps are results the user would recognise, not single clicks.
+STEP_SIZE_RULE = ("Each step is a result, never one step per click or per suggestion. "
+                  "Fill a whole form in one step (for example \"Fill in From: Delhi and To: Mumbai\").")
+
 
 @dataclass
 class Step:
@@ -27,6 +31,7 @@ Task: "{task}"
 
 Split the task into 1 to {max_steps} steps. Simple tasks need only 1 or 2 steps.
 Each step is something you can see is finished by looking at the browser.
+{step_size}
 Keep the user's exact names, places and dates.
 The browser is already open; never include a step to open the browser.
 
@@ -49,6 +54,7 @@ What went wrong: {reason}
 Current page: {url}
 
 Write the remaining steps (1 to {max_steps}) to still complete the task, trying a different way than the failed step.
+{step_size}
 If the task cannot be done (for example the item does not exist or the site refuses), answer with an empty list.
 
 Answer with JSON only:
@@ -81,7 +87,7 @@ def _to_steps(answer, first_number: int = 1) -> list[Step]:
 
 async def make_plan(task: str, start_url: str, caller: Caller, model: str, backup: str | None) -> list[Step]:
     where = f'The browser is already on: "{start_url}"' if start_url else "The browser is open on a blank or search page."
-    prompt = PLAN_PROMPT.format(task=task, where=where, max_steps=MAX_STEPS)
+    prompt = PLAN_PROMPT.format(task=task, where=where, max_steps=MAX_STEPS, step_size=STEP_SIZE_RULE)
     try:
         steps = _to_steps(await ask_json(caller, model, backup, prompt))
     except Exception as err:
@@ -104,7 +110,7 @@ async def revise_plan(
     finished_text = "\n".join(f"{s.number}. {s.title}" for s in finished) or "(none)"
     prompt = REVISE_PROMPT.format(
         task=task, finished=finished_text, failed=failed.title,
-        reason=reason, url=url or "unknown", max_steps=MAX_STEPS,
+        reason=reason, url=url or "unknown", max_steps=MAX_STEPS, step_size=STEP_SIZE_RULE,
     )
     answer = await ask_json(caller, model, backup, prompt)
     return _to_steps(answer, first_number=len(finished) + 1)
