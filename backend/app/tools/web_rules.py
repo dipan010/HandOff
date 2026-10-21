@@ -4,11 +4,14 @@
 - A request that names a site we know ("lofi on youtube", "Alan Turing
   wikipedia") opens that site's own search page.
 - Anything else goes to a web search, and the best result is opened.
+- "Best" is decided by fixed rules (`rank_results`): results that match more
+  of the words, and official, docs or help pages, go up; social sites, ads
+  and links back to the search engine go down.
 """
 
 import re
 from dataclasses import dataclass
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 
 @dataclass(frozen=True)
@@ -89,3 +92,52 @@ def route(query: str, site: str = "") -> str | None:
 def search_url(query: str, engine: str = "google") -> str:
     template = SEARCH_ENGINES.get(engine.lower(), SEARCH_ENGINES["google"])
     return template.format(q=quote_plus(query.strip()))
+
+
+# ── Picking the best result ────────────────────────────────────────────────
+
+_SMALL_WORDS = {"a", "an", "the", "of", "for", "in", "on", "to", "and", "or", "how", "what", "is", "are",
+                "find", "website", "site", "page", "web", "online", "me", "my", "with"}
+SOCIAL_SITES = ("facebook.com", "instagram.com", "twitter.com", "x.com", "tiktok.com", "pinterest.com",
+                "linkedin.com", "threads.net", "snapchat.com")
+AD_LINK = re.compile(r"(googleadservices\.|doubleclick\.|/pagead/|/aclk\b|[?&]ad_?id=)", re.I)
+# The search engine's own address, not its company's other sites (support.google.com is a help page).
+SEARCH_SITES = re.compile(r"^(google\.[a-z.]+|bing\.com|duckduckgo\.com|search\.yahoo\.com|yandex\.[a-z]+)$", re.I)
+HELP_HOST = re.compile(r"^(docs|help|support|developers?|learn)\.", re.I)
+HELP_PATH = re.compile(r"/(docs?|documentation|help|support|faq|manual|guides?)(/|$)", re.I)
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 1 and w not in _SMALL_WORDS}
+
+
+def _on(host: str, sites: tuple[str, ...]) -> bool:
+    return any(host == s or host.endswith("." + s) for s in sites)
+
+
+def result_score(query: str, result: dict) -> int:
+    url = str(result.get("url") or "")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    wanted = _words(query)
+    title = _words(result.get("title", ""))
+    elsewhere = _words(f"{url} {result.get('snippet', '')}")
+    score = sum(2 if w in title else 1 if w in elsewhere else 0 for w in wanted)
+    # Official: says so, or the site's own name is one of the words ("turing.ac.uk").
+    labels = host.split(".")[:-1]
+    if "official" in title or any(len(w) >= 4 and w in label for w in wanted for label in labels):
+        score += 2
+    if HELP_HOST.match(host) or HELP_PATH.search(parsed.path):
+        score += 2
+    if _on(host, SOCIAL_SITES):
+        score -= 4
+    if AD_LINK.search(url):
+        score -= 10
+    elif SEARCH_SITES.search(host):
+        score -= 3
+    return score
+
+
+def rank_results(query: str, results: list[dict]) -> list[dict]:
+    """Search results best first. Equal results keep the search engine's order."""
+    return sorted(results, key=lambda r: -result_score(query, r))

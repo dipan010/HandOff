@@ -140,3 +140,15 @@ async def test_fill_form_types_into_pickers_that_only_list_matches_after_typing(
     assert [n for n, _ in browser.actions] == ["choose_option", "type_text", "choose_option"]
     assert calls[1] == {"text": "Kolkata"}
     assert result.ok and "From = Kolkata, India" in result.message
+
+
+async def test_search_opens_the_best_ranked_result_not_just_the_first():
+    found = [
+        {"title": "Alan Turing - Wikipedia", "url": "https://en.wikipedia.org/wiki/Alan_Turing", "snippet": ""},
+        {"title": "The Alan Turing Institute", "url": "https://www.turing.ac.uk/", "snippet": ""},
+    ]
+    browser = FakePageBrowser([BLANK, page("https://www.google.com/search?q=x"), page("https://www.turing.ac.uk/")],
+                              results=found)
+    result = await BrowserTools(browser).run("search_web", {"query": "alan turing institute"})
+    assert navigations(browser)[-1] == "https://www.turing.ac.uk/"
+    assert "2. Alan Turing - Wikipedia" in result.message

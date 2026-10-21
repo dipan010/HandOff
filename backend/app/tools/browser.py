@@ -13,7 +13,7 @@ from google.genai import types
 
 from app.browser.base import BrowserAdapter
 from app.browser.page_view import change_words, element_by_id, find_field
-from app.tools.web_rules import route, search_url
+from app.tools.web_rules import rank_results, route, search_url
 
 
 @dataclass
@@ -267,7 +267,7 @@ class BrowserTools:
         if not opened.ok:
             return opened
         reply = await self.browser.execute_action("search_results", {})
-        results = (reply.get("results") or []) if _reply_ok(reply) else []
+        results = rank_results(query, (reply.get("results") or []) if _reply_ok(reply) else [])
         if not results:
             return ToolResult(True, f"Searched for \"{query}\". The results are open; pick one from the page view.",
                               data=opened.data)
@@ -280,7 +280,7 @@ class BrowserTools:
             return ToolResult(False, f"Found results but could not open the first one. Results:\n{_results_text(results)}",
                               data={"results": results})
         others = f"\nOther results:\n{_results_text(results[1:5], start=2)}" if len(results) > 1 else ""
-        return ToolResult(True, f"Searched for \"{query}\" and opened the first result: {best['title']} ({best['url']}).{others}",
+        return ToolResult(True, f"Searched for \"{query}\" and opened the best result: {best['title']} ({best['url']}).{others}",
                           data={"results": results, "opened": best["url"]})
 
     async def page_map(self) -> dict | None:
