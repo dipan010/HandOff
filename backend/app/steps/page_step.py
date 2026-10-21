@@ -284,7 +284,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
         calls = [p.function_call for p in content.parts if getattr(p, "function_call", None)]
         text = " ".join(p.text for p in content.parts if getattr(p, "text", None) and not getattr(p, "thought", False))
         if text:
-            await run.ui.send_narration(run.session_id, text)
+            await run.ui.send_narration(run.session_id, text, speak=not run.narrator_on())
         if not calls:
             failures += 1
             last_failure = "Gemini answered without choosing an action."

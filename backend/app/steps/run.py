@@ -144,6 +144,9 @@ class StepOutcome:
     summary: str = ""
 
 
+NARRATOR_CONNECT_WAIT = 3.0   # seconds the acknowledgement waits for the narrator to connect
+
+
 @dataclass
 class TaskRun:
     session_id: str
@@ -186,16 +189,28 @@ class TaskRun:
     async def status(self, state: str, detail: str) -> None:
         await self.ui.send_status(self.session_id, state, detail, self.grandparents_mode)
 
+    def narrator_on(self) -> bool:
+        """The narrator is speaking for this task, so it is the only voice."""
+        return bool(self.live_session_ref and self.live_session_ref[0] is not None)
+
     async def say_on_it(self) -> None:
         lines = ACK_LINES_WARM if self.grandparents_mode else ACK_LINES
         line = lines[len(self.task) % len(lines)]
-        await self.ui.send_ack(self.session_id, line)
-        session = self.live_session_ref[0] if self.live_session_ref else None
-        if session is not None:
+        # With narration on, the narrator may still be connecting: give it a
+        # moment, so the first words come in the same voice as the rest.
+        if self.live_session_ref is not None:
+            for _ in range(int(NARRATOR_CONNECT_WAIT / 0.1)):
+                if self.narrator_on():
+                    break
+                await asyncio.sleep(0.1)
+        spoken = False
+        if self.narrator_on():
             try:
-                await session.send_client_content(turns=types.Content(parts=[types.Part(text=line)]))
+                await self.live_session_ref[0].send_client_content(turns=types.Content(parts=[types.Part(text=line)]))
+                spoken = True
             except Exception:
                 pass
+        await self.ui.send_ack(self.session_id, line, speak=not spoken)
 
     async def screenshot(self) -> bytes | None:
         if self.next_screenshot:
@@ -285,7 +300,7 @@ class TaskRun:
             calls = [p.function_call for p in content.parts if getattr(p, "function_call", None)]
             marker = find_marker(text)
             if text and not marker:
-                await self.ui.send_narration(self.session_id, text)
+                await self.ui.send_narration(self.session_id, text, speak=not self.narrator_on())
 
             # The model says it's finished, or has stopped acting: check the screen.
             if marker or (not calls and nudges >= 1):

@@ -292,7 +292,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 if use_steps:
                     agent_task = asyncio.create_task(
-                        run_task(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref,
+                        # No narrator slot when narration is off, so nothing waits for one.
+                        run_task(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref,
+                                 live_session_ref if narration_enabled else None,
                                  open_browser=open_browser)
                     )
                 else:

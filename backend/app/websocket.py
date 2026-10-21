@@ -146,11 +146,12 @@ class ConnectionManager:
             }
         })
 
-    async def send_narration(self, session_id: str, text: str):
-        """Send live narration text from the Live API."""
+    async def send_narration(self, session_id: str, text: str, speak: bool = True):
+        """Narration text for the dashboard. `speak` False: the narrator is
+        already saying it, so the dashboard only shows it (one voice)."""
         await self.send_message(session_id, {
             "type": "narration",
-            "data": {"text": text}
+            "data": {"text": text, "speak": speak}
         })
 
     async def send_audio_narration(self, session_id: str, audio_b64: str):
@@ -243,9 +244,9 @@ class ConnectionManager:
             }
         })
 
-    async def send_ack(self, session_id: str, text: str):
+    async def send_ack(self, session_id: str, text: str, speak: bool = True):
         """A short reply straight after a task arrives ("Sure, opening that now")."""
-        await self.send_message(session_id, {"type": "ack", "data": {"text": text}})
+        await self.send_message(session_id, {"type": "ack", "data": {"text": text, "speak": speak}})
 
     async def send_quick_reply(self, session_id: str, text: str):
         """An answer that needed no browser work."""

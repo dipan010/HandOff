@@ -133,7 +133,7 @@ async def run_live_stream(
                                             if now - last_narration_time < MIN_NARRATION_GAP:
                                                 continue
 
-                                            await ws_manager.send_narration(session_id, part.text)
+                                            await ws_manager.send_narration(session_id, part.text, speak=False)
                                             last_narration_time = now
                             except AttributeError:
                                 pass

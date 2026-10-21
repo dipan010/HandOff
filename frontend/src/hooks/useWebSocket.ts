@@ -22,6 +22,7 @@ interface UseWebSocketReturn {
     screenshot: string | null;
     actions: { step: number; data: AgentAction }[];
     narration: string;
+    narrationSpeak: boolean;   // false: the narrator voice is already saying it
     safetyRequest: SafetyConfirmRequest | null;
     pausePrompt: PausePromptData | null;
     taskSummary: string | null;
@@ -40,6 +41,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
     const [screenshot, setScreenshot] = useState<string | null>(null);
     const [actions, setActions] = useState<{ step: number; data: AgentAction }[]>([]);
     const [narration, setNarration] = useState('');
+    const [narrationSpeak, setNarrationSpeak] = useState(true);
     const [safetyRequest, setSafetyRequest] = useState<SafetyConfirmRequest | null>(null);
     const [pausePrompt, setPausePrompt] = useState<PausePromptData | null>(null);
     const [taskSummary, setTaskSummary] = useState<string | null>(null);
@@ -123,6 +125,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
                         break;
 
                     case 'narration':
+                        setNarrationSpeak(data.speak !== false);
                         setNarration(data.text);
                         break;
 
@@ -143,10 +146,12 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
 
                     case 'ack':
                         setStatusDetail(data.text);
+                        setNarrationSpeak(data.speak !== false);
                         setNarration(data.text);
                         break;
 
                     case 'quick_reply':
+                        setNarrationSpeak(true);
                         setNarration(data.text);
                         break;
 
@@ -323,6 +328,7 @@ export function useWebSocket(sessionId: string | null): UseWebSocketReturn {
         screenshot,
         actions,
         narration,
+        narrationSpeak,
         safetyRequest,
         pausePrompt,
         taskSummary,

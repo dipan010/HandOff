@@ -18,7 +18,9 @@ export default function Home() {
   const [narrationEnabled, setNarrationEnabled] = useState(true);
   const [displayText, setDisplayText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
-  const narrationQueue = useRef<string[]>([]);
+  // Each message, and whether the dashboard should speak it (not when the
+  // narrator voice is already saying it: one voice at a time).
+  const narrationQueue = useRef<{ text: string; speak: boolean }[]>([]);
   const isDisplaying = useRef(false);
 
   const {
@@ -29,6 +31,7 @@ export default function Home() {
     screenshot,
     actions,
     narration,
+    narrationSpeak,
     safetyRequest,
     pausePrompt,
     planSteps,
@@ -75,9 +78,9 @@ export default function Home() {
     }
     isDisplaying.current = true;
     const next = narrationQueue.current.shift()!;
-    setDisplayText(next);
-    if (narrationEnabled) {
-      speak(next);
+    setDisplayText(next.text);
+    if (narrationEnabled && next.speak) {
+      speak(next.text);
     }
 
     // Hold each message for at least 3 seconds
@@ -86,11 +89,13 @@ export default function Home() {
 
   useEffect(() => {
     if (narration) {
-      narrationQueue.current.push(narration);
+      narrationQueue.current.push({ text: narration, speak: narrationSpeak });
       if (!isDisplaying.current) {
         displayNextNarration();
       }
     }
+    // Only a new message is queued; narrationSpeak is set together with it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narration, displayNextNarration]);
 
   // Stop speech when task ends
