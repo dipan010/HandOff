@@ -146,6 +146,7 @@ class StepOutcome:
 
 
 NARRATOR_CONNECT_WAIT = 3.0   # seconds the acknowledgement waits for the narrator to connect
+NARRATOR_SPEECH_WAIT = 3.0    # seconds an "about to" line waits for the narrator's voice to start
 
 
 @dataclass
@@ -194,15 +195,28 @@ class TaskRun:
         """The narrator is speaking for this task, so it is the only voice."""
         return bool(self.live_session_ref and self.live_session_ref[0] is not None)
 
-    async def tell_narrator(self, text: str) -> None:
-        """A line for the narrator to say now, before the thing it describes happens."""
-        if self.narrator_on():
-            try:
-                await self.live_session_ref[0].send_client_content(turns=types.Content(parts=[types.Part(text=text)]))
-            except Exception:
-                pass
+    async def tell_narrator(self, text: str, wait_for_speech: bool = False) -> bool:
+        """A line for the narrator to say now, before the thing it describes happens.
 
-    async def say_on_it(self) -> None:
+        Speech takes a second or two to start; with `wait_for_speech`, wait
+        (up to NARRATOR_SPEECH_WAIT) until the narrator's voice has started.
+        """
+        if not self.narrator_on():
+            return False
+        narrator = self.live_session_ref[0]
+        told = time.time()
+        try:
+            await narrator.send_client_content(turns=types.Content(parts=[types.Part(text=text)]))
+        except Exception:
+            return False
+        if wait_for_speech and hasattr(narrator, "last_audio"):
+            while narrator.last_audio < told and time.time() - told < NARRATOR_SPEECH_WAIT:
+                await asyncio.sleep(0.05)
+        return True
+
+    async def say_on_it(self, then: str = "") -> None:
+        """The acknowledgement. `then` is said in the same breath ("On it. Opening
+        turing.ac.uk."), and HandOff waits for the voice to start before going on."""
         lines = ACK_LINES_WARM if self.grandparents_mode else ACK_LINES
         line = lines[len(self.task) % len(lines)]
         # With narration on, the narrator may still be connecting: give it a
@@ -212,13 +226,7 @@ class TaskRun:
                 if self.narrator_on():
                     break
                 await asyncio.sleep(0.1)
-        spoken = False
-        if self.narrator_on():
-            try:
-                await self.live_session_ref[0].send_client_content(turns=types.Content(parts=[types.Part(text=line)]))
-                spoken = True
-            except Exception:
-                pass
+        spoken = await self.tell_narrator(f"{line} {then}".strip(), wait_for_speech=bool(then))
         await self.ui.send_ack(self.session_id, line, speak=not spoken)
 
     async def screenshot(self) -> bytes | None:
@@ -507,9 +515,8 @@ async def run_task(
     # The narrator first, so its words come before what they describe.
     if start_narration is not None:
         start_narration()
-    await run.say_on_it()
     where = (urlparse(start_url).hostname or "").removeprefix("www.") if start_url else ""
-    await run.tell_narrator(f"Opening {where}." if where else "Opening the browser.")
+    await run.say_on_it(then=f"Opening {where}." if where else "Opening the browser.")
     if open_browser is not None:
         await open_browser(start_url)
     # Nothing works until the Chrome extension has connected to this session.

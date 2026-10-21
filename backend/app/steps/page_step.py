@@ -217,7 +217,8 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
         notice_key = ((page or {}).get("url"), (notice or {}).get("label"))
         if notice is not None and notice_key not in run.closed_notices:
             run.closed_notices.add(notice_key)
-            await run.tell_narrator(f"Closing the cookie notice by choosing \"{notice.get('label')}\".")
+            await run.tell_narrator(f"Closing the cookie notice by choosing \"{notice.get('label')}\".",
+                                    wait_for_speech=True)
             closed = await tools.run("click", {"element_id": notice.get("id")})
             if closed.ok:
                 logger.info(f"Closed a cookie notice: {notice.get('label')}")

@@ -26,7 +26,8 @@ ACTION_NARRATION_COOLDOWN     = 4.0   # suppress narration for N seconds after a
 # pages that weren't open yet.
 STICK_TO_WHAT_HAPPENED = (
     "Only describe what HandOff has told you it is doing, or what the latest screenshot shows. "
-    "Never say a page is open or something is done until HandOff says so or the screenshot shows it."
+    "Never say a page is open or something is done until HandOff says so or the screenshot shows it. "
+    "When HandOff tells you what it is about to do, say it as happening now (\"Opening turing.ac.uk now\")."
 )
 
 NARRATION_PROMPT_GRANDPARENTS = (
@@ -45,6 +46,18 @@ NARRATION_PROMPT_DEFAULT = (
     "Use friendly, encouraging language. "
     + STICK_TO_WHAT_HAPPENED
 )
+
+
+class Narrator:
+    """The Live session, plus when its voice last sent audio, so HandOff can
+    wait for speech to start before doing what it describes."""
+
+    def __init__(self, session):
+        self.session = session
+        self.last_audio = 0.0
+
+    async def send_client_content(self, **kwargs):
+        return await self.session.send_client_content(**kwargs)
 
 
 def opening_line(task: str) -> str:
@@ -85,15 +98,16 @@ async def run_live_stream(
         ) as session:
             logger.info(f"Live API session started (audio mode) for {session_id}")
 
-            # Store so agent loop can push action narration into it
-            if live_session_ref is not None:
-                live_session_ref[0] = session
-
             await session.send_client_content(
                 turns=types.Content(
                     parts=[types.Part(text=opening_line(task))]
                 )
             )
+
+            # Only now let the task talk to it, so the task is the first thing it hears.
+            narrator = Narrator(session)
+            if live_session_ref is not None:
+                live_session_ref[0] = narrator
 
             # ── Narration state ───────────────────────────────────────────────
             last_narration_time = 0.0
@@ -105,6 +119,7 @@ async def run_live_stream(
                         async for response in session.receive():
                             # Audio chunk → queue on frontend
                             if response.data:
+                                narrator.last_audio = time.time()
                                 audio_b64 = base64.b64encode(response.data).decode("utf-8")
                                 await ws_manager.send_audio_narration(session_id, audio_b64)
 
