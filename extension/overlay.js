@@ -72,6 +72,11 @@ window.udaaOverlay = {
             dot.style.borderRadius = "50%";
             banner.appendChild(dot);
 
+            const name = document.createElement("b");
+            name.id = "udaa-status-name";
+            name.textContent = "HandOff";
+            banner.appendChild(name);
+
             const text = document.createElement("span");
             text.id = "udaa-status-text";
             banner.appendChild(text);

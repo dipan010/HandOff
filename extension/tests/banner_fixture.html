@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Banner test</title></head>
+<body>
+  <pre id="out"></pre>
+  <script>
+    window.chrome = { runtime: {
+      onMessage: { addListener(fn) { window.pageListener = fn; } },
+      sendMessage() {},
+    } };
+  </script>
+  <script src="../overlay.js"></script>
+  <script src="../page_map.js"></script>
+  <script src="../content_script.js"></script>
+  <script>
+    (async () => {
+      const show = (payload) => {
+        window.pageListener({ type: "UDAA_STATUS", payload }, {}, () => {});
+        const banner = document.getElementById("udaa-status-banner");
+        return {
+          name: banner.querySelector("#udaa-status-name").textContent,
+          text: banner.querySelector("#udaa-status-text").textContent,
+        };
+      };
+      const results = {
+        normal: show({ status: "executing", message: "Clicking 'Search'" }),
+        grandparents: show({ status: "executing", message: "Clicking 'Search'", grandparents_mode: true }),
+      };
+      await new Promise((r) => setTimeout(r, 1200));   // the secure-page badge appears after a moment
+      const badge = document.getElementById("udaa-security-badge");
+      results.badge = badge ? badge.textContent : null;
+      document.getElementById("out").textContent = JSON.stringify(results);
+    })();
+  </script>
+</body>
+</html>

@@ -1157,7 +1157,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             _taskBusy = BUSY_STATUSES.has(status);
             _watchPageBetweenActions(_taskBusy);
             const isGP = request.payload.grandparents_mode;
-            let msg = request.payload.message ? `UDAA: ${request.payload.message}` : status.toUpperCase();
+            // The banner shows the HandOff name itself; this is just what it's doing.
+            let msg = request.payload.message || status.toUpperCase();
 
             if (isGP) {
                 const GP_COPY = {
@@ -1214,7 +1215,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     document.body.appendChild(banner);
                 }
 
-                banner.textContent = msg;
+                banner.textContent = `HandOff: ${msg}`;
                 if (type === 'active') {
                     banner.style.border = "2px solid #00f2fe";
                     banner.style.color = "#00f2fe";
@@ -1222,7 +1223,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     banner.style.border = "2px solid #2ecc71";
                     banner.style.color = "#2ecc71";
                     banner.style.animation = 'none';
-                    banner.textContent = msg;
+                    banner.textContent = `HandOff: ${msg}`;
                     // Wait 4s so user can read it, THEN remove
                     setTimeout(() => { if (banner && banner.parentNode) banner.remove(); }, 4000);
                 } else {
@@ -1261,7 +1262,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     banner.style.boxShadow = "0 4px 15px rgba(0,0,0,0.5)";
                     document.body.appendChild(banner);
                 }
-                banner.textContent = msg;
+                banner.textContent = `HandOff: ${msg}`;
                 banner.style.color = "#00f2fe";
                 banner.style.border = "2px solid #00f2fe";
             }
@@ -1306,7 +1307,7 @@ setTimeout(() => {
     if (window === window.top && sensitiveDomains.some(d => url.includes(d)) && !document.getElementById("udaa-security-badge")) {
         const badge = document.createElement("div");
         badge.id = "udaa-security-badge";
-        badge.innerHTML = "🔒 <b>Secure Page</b> &nbsp;|&nbsp; UDAA respects your privacy here.";
+        badge.innerHTML = "🔒 <b>HandOff</b> &nbsp;|&nbsp; A sign-in or payment page: HandOff never types passwords or card numbers.";
         badge.style.position = "fixed";
         badge.style.top = "20px";
         badge.style.left = "50%";
