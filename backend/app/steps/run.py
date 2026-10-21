@@ -29,7 +29,7 @@ from app.firestore_client import update_session_state
 from app.steps.check import ScreenState, changed, is_step_done
 from app.steps.describe import action_in_plain_words, action_now
 from app.steps.finish import finish_task
-from app.steps.model_call import Caller, GeminiCaller, plain_error, used_up, used_up_message
+from app.steps.model_call import Caller, GeminiCaller, ask_with_backup, plain_error, used_up, used_up_message
 from app.steps.page_step import do_step_by_page
 from app.steps.plan import Step, make_plan, revise_plan
 from app.steps.safety import SignInGuard, pause_and_wait
@@ -267,7 +267,8 @@ class TaskRun:
             contents = trim_screenshots(contents, cfg.KEEP_SCREENSHOTS)
 
             try:
-                response = await self.caller.ask(cfg.COMPUTER_USE_MODEL, contents, action_config)
+                # No backup: only this model can act on screenshots.
+                response = await ask_with_backup(self.caller, cfg.COMPUTER_USE_MODEL, None, contents, action_config)
             except Exception as err:
                 logger.error(f"Action model error: {err}")
                 return StepOutcome("error", plain_error(err))
@@ -362,7 +363,7 @@ class TaskRun:
         """Ask the action model for the closing summary (with the answer, if any)."""
         contents = contents + [types.Content(role="user", parts=[types.Part(text=ASK_FOR_SUMMARY)])]
         try:
-            response = await self.caller.ask(self.cfg.COMPUTER_USE_MODEL, contents, action_config)
+            response = await ask_with_backup(self.caller, self.cfg.COMPUTER_USE_MODEL, None, contents, action_config)
             parts = response.candidates[0].content.parts
         except Exception as err:
             logger.warning(f"Could not get a closing summary: {err}")

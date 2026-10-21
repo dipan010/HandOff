@@ -1,4 +1,4 @@
-"""Calling Gemini: retries on busy errors, a backup model, and JSON answers.
+"""Calling Gemini: waits on per-minute limits, a backup model for busy ones, and JSON answers.
 
 Everything in steps/ talks to Gemini through a `Caller`, so tests can hand in
 a fake one with canned replies.
@@ -18,9 +18,13 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 BUSY_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")
-RETRY_DELAYS = (2, 4)  # seconds; two retries after the first try
+RETRY_DELAYS = (2, 4)  # seconds; retries after a per-minute limit or a time-out (not after "busy")
 MAX_WAIT_FOR_LIMIT = 60  # seconds: wait out a per-minute limit, but not a daily one
 CALL_TIMEOUT = 45        # seconds one Gemini call may take before it counts as hung
+# "Busy" (503) answers seem to count towards the free tier's daily requests,
+# so a busy model is left alone for a minute instead of being asked again.
+BUSY_COOLDOWN = 60       # seconds
+BUSY_RETRY_WAIT = 5      # seconds to wait when every model is busy, before one more try
 
 _RETRY_DELAY = re.compile(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s")
 
@@ -45,6 +49,40 @@ class DailyLimitReached(RuntimeError):
 
 class ModelTimeout(RuntimeError):
     """A Gemini call took longer than its time limit."""
+
+
+class ModelBusy(RuntimeError):
+    """Gemini said the model is overloaded (503). Not retried on the same model."""
+
+
+def is_overloaded(err: Exception) -> bool:
+    text = str(err).upper()
+    return ("503" in text or "UNAVAILABLE" in text) and "429" not in text
+
+
+class BusyModels:
+    """Models that answered "busy" in the last minute."""
+
+    def __init__(self):
+        self._until: dict[str, datetime] = {}
+
+    def mark(self, model: str, now: datetime | None = None) -> None:
+        self._until[model] = (now or datetime.now(timezone.utc)) + timedelta(seconds=BUSY_COOLDOWN)
+
+    def is_busy(self, model: str, now: datetime | None = None) -> bool:
+        until = self._until.get(model)
+        if until is None:
+            return False
+        if (now or datetime.now(timezone.utc)) >= until:
+            del self._until[model]
+            return False
+        return True
+
+    def clear(self) -> None:
+        self._until.clear()
+
+
+busy = BusyModels()
 
 
 # Gemini's daily limits reset at midnight Pacific time.
@@ -172,6 +210,11 @@ class GeminiCaller:
                 if is_busy_error(err) and is_daily_limit(err):
                     used_up.mark(model)
                     raise DailyLimitReached(str(err)) from err
+                if is_overloaded(err):
+                    # Asking again costs a request; the backup model is asked instead.
+                    busy.mark(model)
+                    logger.warning(f"{model} is busy; leaving it for {BUSY_COOLDOWN}s")
+                    raise ModelBusy(str(err)) from err
                 if is_busy_error(err) and attempt < len(self._retry_delays):
                     asked = retry_delay_seconds(err)
                     delay = min(asked + 1, MAX_WAIT_FOR_LIMIT) if asked else self._retry_delays[attempt]
@@ -186,15 +229,42 @@ class GeminiCaller:
                 raise
 
 
+async def _wait_for_busy(caller: Caller) -> None:
+    on_wait = getattr(caller, "on_wait", None)
+    if on_wait is not None:
+        try:
+            await on_wait(BUSY_RETRY_WAIT)
+        except Exception:
+            pass
+    await asyncio.sleep(BUSY_RETRY_WAIT)
+
+
 async def ask_with_backup(caller: Caller, model: str, backup: str | None, contents: Any, config: Any = None) -> Any:
-    """Try `model`; if it fails for any reason, try `backup` once."""
+    """Try `model`; if it fails for any reason, try `backup` once.
+
+    A model that was busy in the last minute is skipped. If every model is
+    busy, wait a few seconds and try the main model once more.
+    """
+    has_backup = bool(backup) and backup != model
     try:
+        if has_backup and busy.is_busy(model):
+            raise ModelBusy(f"{model} was busy a moment ago.")
         return await caller.ask(model, contents, config)
+    except ModelBusy:
+        if has_backup and not busy.is_busy(backup):
+            logger.warning(f"{model} is busy; using backup model {backup}")
+            try:
+                return await caller.ask(backup, contents, config)
+            except ModelBusy:
+                pass
     except Exception as err:
-        if not backup or backup == model or is_account_problem(err):
+        if not has_backup or is_account_problem(err):
             raise
         logger.warning(f"{model} failed ({err}); using backup model {backup}")
         return await caller.ask(backup, contents, config)
+    # Every model is busy: wait a moment, then one more try on the main model.
+    await _wait_for_busy(caller)
+    return await caller.ask(model, contents, config)
 
 
 def response_text(response: Any) -> str:

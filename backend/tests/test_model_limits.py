@@ -6,18 +6,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.steps.model_call import (DailyLimitReached, GeminiCaller, ask_with_backup, next_daily_reset,
+from app.steps import model_call
+from app.steps.model_call import (DailyLimitReached, GeminiCaller, ask_with_backup, busy, next_daily_reset,
                                   plain_error, used_up)
 
 DAILY = RuntimeError("429 RESOURCE_EXHAUSTED. {'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'}")
 PER_MINUTE = RuntimeError("429 RESOURCE_EXHAUSTED. Too many requests per minute")
+OVERLOADED = RuntimeError("503 UNAVAILABLE. This model is currently experiencing high demand.")
 
 
 @pytest.fixture(autouse=True)
-def fresh_limits():
+def fresh_limits(monkeypatch):
     used_up.clear()
+    busy.clear()
+    monkeypatch.setattr(model_call, "BUSY_RETRY_WAIT", 0)
     yield
     used_up.clear()
+    busy.clear()
 
 
 class FakeModels:
@@ -148,3 +153,46 @@ async def test_the_backup_answers_when_the_main_model_hangs():
 def test_timeouts_have_a_plain_message():
     from app.steps.model_call import ModelTimeout
     assert plain_error(ModelTimeout("fast")) == "Gemini took too long to answer. Please try again in a moment."
+
+
+
+# ── F2 (live round, 2026-10-21): "busy" answers seem to count towards the daily
+# limit, so a busy model isn't asked again and again. ─────────────────────────
+
+async def test_a_busy_model_is_not_retried_the_backup_answers_at_once():
+    models = FakeModels(OVERLOADED, "backup answer")
+    assert await ask_with_backup(caller_with(models), "fast", "backup", "hi") == "backup answer"
+    assert models.calls == ["fast", "backup"]
+
+
+async def test_a_model_that_was_just_busy_is_skipped_for_a_minute():
+    models = FakeModels(OVERLOADED, "backup answer")
+    caller = caller_with(models)
+    await ask_with_backup(caller, "fast", "backup", "hi")
+    await ask_with_backup(caller, "fast", "backup", "hi again")
+    assert models.calls == ["fast", "backup", "backup"]
+
+
+def test_a_busy_model_is_tried_again_after_the_minute():
+    now = datetime(2026, 10, 21, 9, 0, tzinfo=timezone.utc)
+    busy.mark("fast", now=now)
+    assert busy.is_busy("fast", now=now)
+    assert not busy.is_busy("fast", now=datetime(2026, 10, 21, 9, 1, 1, tzinfo=timezone.utc))
+
+
+async def test_when_both_models_are_busy_wait_once_then_try_the_main_one_again():
+    waits = []
+
+    async def on_wait(seconds):
+        waits.append(seconds)
+
+    models = FakeModels(OVERLOADED, OVERLOADED, "ok")
+    assert await ask_with_backup(caller_with(models, on_wait=on_wait), "fast", "backup", "hi") == "ok"
+    assert models.calls == ["fast", "backup", "fast"]
+    assert len(waits) == 1
+
+
+async def test_a_busy_model_with_no_backup_is_tried_once_more_after_a_wait():
+    models = FakeModels(OVERLOADED, "ok")
+    assert await ask_with_backup(caller_with(models), "fast", None, "hi") == "ok"
+    assert models.calls == ["fast", "fast"]
