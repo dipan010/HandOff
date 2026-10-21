@@ -255,7 +255,8 @@ async def ask_with_backup(caller: Caller, model: str, backup: str | None, conten
     A model that was busy in the last minute is skipped. If every model is
     busy, wait a few seconds and try the main model once more.
     """
-    has_backup = bool(backup) and backup != model
+    # A backup that has used up today's requests is no backup.
+    has_backup = bool(backup) and backup != model and not used_up.is_used_up(backup)
     try:
         if has_backup and busy.is_busy(model):
             raise ModelBusy(f"{model} was busy a moment ago.")
@@ -265,7 +266,7 @@ async def ask_with_backup(caller: Caller, model: str, backup: str | None, conten
             logger.warning(f"{model} is busy; using backup model {backup}")
             try:
                 return await caller.ask(backup, contents, config)
-            except ModelBusy:
+            except (ModelBusy, DailyLimitReached):
                 pass
     except Exception as err:
         if not has_backup or is_account_problem(err):

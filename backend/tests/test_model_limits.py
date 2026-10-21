@@ -236,3 +236,16 @@ async def test_the_banner_says_how_long_is_left(monkeypatch):
         await run_task("s1", "hello", "", None, caller=caller, ui=ui, cfg=cfg(), timing=NO_WAIT)
     statuses = [args for name, args, _ in ui.sent if name == "send_status"]
     assert ("waiting", "Waiting for Gemini: 40 s left...") in [(s[0], s[1]) for s in statuses]
+
+
+async def test_a_busy_main_model_is_tried_again_when_the_backup_is_used_up():
+    used_up.mark("backup")
+    models = FakeModels(OVERLOADED, "ok")
+    assert await ask_with_backup(caller_with(models), "fast", "backup", "hi") == "ok"
+    assert models.calls == ["fast", "fast"]
+
+
+async def test_a_backup_that_runs_out_while_the_main_model_is_busy_doesnt_end_the_task():
+    models = FakeModels(OVERLOADED, DAILY, "ok")
+    assert await ask_with_backup(caller_with(models), "fast", "backup", "hi") == "ok"
+    assert models.calls == ["fast", "backup", "fast"]
