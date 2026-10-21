@@ -1,7 +1,4 @@
-import pytest
-
 from app.config import Settings
-from app.steps import run as run_module
 from app.steps.page_step import trim_page_views
 from app.steps.run import Timing, run_task
 from tests.fakes import FakeCaller, FakePageBrowser, FakeUI, action_reply, calls_reply, page
@@ -14,17 +11,6 @@ RESULTS_PAGE = page("https://www.youtube.com/results?search_query=lofi",
                     ("link", "lofi hip hop radio - beats to relax/study to"), ("link", "Shorts"), ("button", "Filters"))
 PLAYING_PAGE = page("https://www.youtube.com/watch?v=jfKfPfyJRdk",
                     ("button", "Pause (k)"), ("link", "Lofi Girl"), ("button", "Subscribe"))
-
-
-@pytest.fixture(autouse=True)
-def quiet_side_effects(monkeypatch):
-    async def nothing(*a, **k):
-        return None
-
-    monkeypatch.setattr(run_module, "upload_screenshot", nothing)
-    monkeypatch.setattr("app.steps.page_step.log_action", nothing)
-    monkeypatch.setattr("app.steps.page_step.update_session_state", nothing)
-    monkeypatch.setattr("app.steps.finish.update_session_state", nothing)
 
 
 def cfg(**overrides):

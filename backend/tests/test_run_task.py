@@ -1,23 +1,9 @@
-import pytest
-
 from app.config import Settings
-from app.steps import run as run_module
 from app.steps.run import Timing, run_task
 from tests.fakes import FakeBrowser, FakeCaller, FakeUI, action_reply
 
 NO_WAIT = Timing(after_action=0, after_page_load=0, preview=0, speak_wait=0, no_frame_wait=0,
                  settle_min=0, settle_interval=0, settle_max=0)
-
-
-@pytest.fixture(autouse=True)
-def quiet_side_effects(monkeypatch):
-    async def nothing(*a, **k):
-        return None
-
-    monkeypatch.setattr(run_module, "upload_screenshot", nothing)
-    monkeypatch.setattr(run_module, "log_action", nothing)
-    monkeypatch.setattr(run_module, "update_session_state", nothing)
-    monkeypatch.setattr("app.steps.finish.update_session_state", nothing)
 
 
 def cfg(**overrides):
