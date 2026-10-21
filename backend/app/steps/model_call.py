@@ -25,6 +25,7 @@ CALL_TIMEOUT = 45        # seconds one Gemini call may take before it counts as 
 # so a busy model is left alone for a minute instead of being asked again.
 BUSY_COOLDOWN = 60       # seconds
 BUSY_RETRY_WAIT = 5      # seconds to wait when every model is busy, before one more try
+WAIT_UPDATE_EVERY = 10   # seconds between "time left" updates while waiting
 
 _RETRY_DELAY = re.compile(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s")
 
@@ -186,6 +187,22 @@ class GeminiCaller:
         self._timeout = timeout
         self.on_wait = on_wait   # told before each wait, so the user sees "Waiting a moment"
 
+    async def wait(self, seconds: float) -> None:
+        """Wait, telling `on_wait` the time left now and every few seconds, so a
+        long wait doesn't look like HandOff is stuck."""
+        left = seconds
+        while True:
+            if self.on_wait is not None:
+                try:
+                    await self.on_wait(left)
+                except Exception:
+                    pass
+            step = min(left, WAIT_UPDATE_EVERY)
+            await asyncio.sleep(step)
+            left -= step
+            if left <= 0:
+                return
+
     async def ask(self, model: str, contents: Any, config: Any = None) -> Any:
         if used_up.is_used_up(model):
             raise DailyLimitReached(f"{model} has used up today's requests.")
@@ -219,24 +236,17 @@ class GeminiCaller:
                     asked = retry_delay_seconds(err)
                     delay = min(asked + 1, MAX_WAIT_FOR_LIMIT) if asked else self._retry_delays[attempt]
                     logger.warning(f"Gemini busy on {model}; retrying in {delay:.0f}s")
-                    if self.on_wait is not None:
-                        try:
-                            await self.on_wait(delay)
-                        except Exception:
-                            pass
-                    await asyncio.sleep(delay)
+                    await self.wait(delay)
                     continue
                 raise
 
 
 async def _wait_for_busy(caller: Caller) -> None:
-    on_wait = getattr(caller, "on_wait", None)
-    if on_wait is not None:
-        try:
-            await on_wait(BUSY_RETRY_WAIT)
-        except Exception:
-            pass
-    await asyncio.sleep(BUSY_RETRY_WAIT)
+    wait = getattr(caller, "wait", None)
+    if wait is not None:
+        await wait(BUSY_RETRY_WAIT)
+    else:
+        await asyncio.sleep(BUSY_RETRY_WAIT)
 
 
 async def ask_with_backup(caller: Caller, model: str, backup: str | None, contents: Any, config: Any = None) -> Any:

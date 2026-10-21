@@ -196,3 +196,43 @@ async def test_a_busy_model_with_no_backup_is_tried_once_more_after_a_wait():
     models = FakeModels(OVERLOADED, "ok")
     assert await ask_with_backup(caller_with(models), "fast", None, "hi") == "ok"
     assert models.calls == ["fast", "fast"]
+
+
+# ── F3 (live round, 2026-10-21): a minute's wait with one unchanging message
+# looked like HandOff was stuck. ─────────────────────────────────────────────
+
+async def test_a_long_wait_counts_down_so_it_doesnt_look_stuck(monkeypatch):
+    waits, slept = [], []
+
+    async def on_wait(seconds):
+        waits.append(seconds)
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(model_call.asyncio, "sleep", fake_sleep)
+    models = FakeModels(PER_MINUTE, "ok")
+    caller = caller_with(models, retry_delays=(25,), on_wait=on_wait)
+    assert await caller.ask("fast", "hi") == "ok"
+    assert waits == [25, 15, 5]
+    assert sum(slept) == 25
+
+
+async def test_the_banner_says_how_long_is_left(monkeypatch):
+    from app.steps.run import run_task
+    from tests.fakes import FakeUI
+    from tests.test_page_step import NO_WAIT, cfg
+
+    caller = GeminiCaller("test-key")
+    caller._client = SimpleNamespace(models=FakeModels(RuntimeError("boom")))
+    ui = FakeUI()
+
+    async def fake_sort(*a, **k):
+        await caller.on_wait(40)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr("app.steps.run.sort_request", fake_sort)
+    with pytest.raises(RuntimeError):
+        await run_task("s1", "hello", "", None, caller=caller, ui=ui, cfg=cfg(), timing=NO_WAIT)
+    statuses = [args for name, args, _ in ui.sent if name == "send_status"]
+    assert ("waiting", "Waiting for Gemini: 40 s left...") in [(s[0], s[1]) for s in statuses]

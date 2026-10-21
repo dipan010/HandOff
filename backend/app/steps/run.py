@@ -453,7 +453,7 @@ async def run_task(
     if isinstance(run.caller, GeminiCaller) and run.caller.on_wait is None:
         async def waiting(seconds: float) -> None:
             await run.status("waiting", "Just a moment, Gemini asked me to wait..." if run.grandparents_mode
-                             else f"Waiting a moment for Gemini ({seconds:.0f}s)...")
+                             else f"Waiting for Gemini: {seconds:.0f} s left...")
         run.caller.on_wait = waiting
 
     sorted_request = await sort_request(task, start_url, run.caller, cfg.SORT_MODEL, cfg.BACKUP_MODEL)
