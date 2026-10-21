@@ -100,3 +100,25 @@ def test_a_search_companys_own_help_site_is_not_a_link_back_to_the_search():
         result("Change gmail password - Gmail Help", "https://support.google.com/mail/answer/41078"),
     ])
     assert urls(ranked)[0] == "https://support.google.com/mail/answer/41078"
+
+
+# ── F5 (live round, 2026-10-21): every task opened google.com first ─────────
+
+from app.tools.web_rules import first_page_for  # noqa: E402
+
+
+def test_a_task_that_names_one_site_starts_there():
+    assert first_page_for("on makemytrip, fill in a flight from Delhi to Mumbai") == "https://www.makemytrip.com/"
+    assert first_page_for("play lofi hip hop radio on youtube") == "https://www.youtube.com/"
+    assert first_page_for("open turing.ac.uk and find the contact page") == "https://turing.ac.uk"
+
+
+def test_other_tasks_start_on_the_search_page():
+    assert first_page_for("find the Alan Turing Institute website") == ""
+    assert first_page_for("compare the price on amazon and flipkart") == ""     # two sites: let the plan decide
+
+
+def test_names_with_dots_are_not_taken_for_addresses():
+    assert first_page_for("find the docs for node.js streams") == ""
+    assert first_page_for("what's new in Next.js 15") == ""
+    assert first_page_for("open www.irctc.co.in") == "https://www.irctc.co.in"

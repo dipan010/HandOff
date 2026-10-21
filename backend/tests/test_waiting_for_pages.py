@@ -50,7 +50,7 @@ async def test_task_stops_with_a_plain_message_when_the_extension_is_missing():
     caller = FakeCaller()
     ui = FakeUI()
 
-    async def open_browser():
+    async def open_browser(url=""):
         return None
 
     await run_task("s1", "search for shoes", "", browser, caller=caller, ui=ui, cfg=cfg(),

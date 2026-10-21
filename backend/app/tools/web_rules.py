@@ -89,6 +89,24 @@ def route(query: str, site: str = "") -> str | None:
     return known.home
 
 
+# Endings that make a word inside a sentence a web address ("node.js" isn't one).
+COMMON_ENDINGS = {"com", "org", "net", "edu", "gov", "io", "in", "uk", "co", "ac", "ai", "dev", "app",
+                  "info", "me", "us", "ca", "au", "de", "fr", "jp", "eu", "news", "tv"}
+
+
+def first_page_for(task: str) -> str:
+    """Where to open the tab for a task: the one site it names, or a web address
+    in it. Empty means start on the search page, as before."""
+    for word in (task or "").split():
+        word = word.strip(".,;:!?()\"'")
+        address = as_address(word)
+        host = (urlparse(address).hostname or "") if address else ""
+        if address and ("://" in word or host.rsplit(".", 1)[-1].lower() in COMMON_ENDINGS):
+            return address
+    named = [k for k in KNOWN_SITES if any(_mentions(task or "", name) for name in k.names)]
+    return named[0].home if len(named) == 1 else ""
+
+
 def search_url(query: str, engine: str = "google") -> str:
     template = SEARCH_ENGINES.get(engine.lower(), SEARCH_ENGINES["google"])
     return template.format(q=quote_plus(query.strip()))

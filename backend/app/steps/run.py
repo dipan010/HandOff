@@ -35,6 +35,7 @@ from app.steps.plan import Step, make_plan, revise_plan
 from app.steps.safety import SignInGuard, pause_and_wait
 from app.steps.sort import sort_request
 from app.storage import upload_screenshot
+from app.tools.web_rules import first_page_for
 from app.voice.narration import narrate_action
 from app.websocket import manager as default_ui
 
@@ -471,8 +472,13 @@ async def run_task(
         await update_session_state(session_id, "error", "Daily limit used up")
         return
 
+    # Open the tab on the site the task names, if it names one, instead of a
+    # search page HandOff would only have to leave again.
+    if not start_url:
+        start_url = first_page_for(task)
+        run.start_url = start_url
     if open_browser is not None:
-        await open_browser()
+        await open_browser(start_url)
     # Nothing works until the Chrome extension has connected to this session.
     wait_for_extension = getattr(browser, "wait_for_extension", None)
     if wait_for_extension is not None:

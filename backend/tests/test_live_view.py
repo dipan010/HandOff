@@ -92,7 +92,7 @@ async def test_the_task_turns_the_live_view_on_once_the_extension_is_there():
     browser = Recording([page("https://example.com/", ("button", "Go"))])
     caller = FakeCaller(actions=[action_reply(call=("task_complete", {"summary": "done"}))])
 
-    async def open_browser():
+    async def open_browser(url=""):
         return None
 
     await run_task("s1", "open example.com", "", browser, caller=caller, ui=FakeUI(), cfg=cfg(),

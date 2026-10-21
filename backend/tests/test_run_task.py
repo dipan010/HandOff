@@ -138,7 +138,7 @@ async def test_gemini_error_is_shown_plainly():
 async def test_chat_never_opens_the_browser():
     opened = []
 
-    async def open_browser():
+    async def open_browser(url=""):
         opened.append(True)
 
     caller = FakeCaller(sort=[{"kind": "chat", "effort": "quick", "reply": "Hi!"}])
@@ -151,7 +151,7 @@ async def test_tasks_open_the_browser_once_before_acting():
     order = []
     browser = FakeBrowser()
 
-    async def open_browser():
+    async def open_browser(url=""):
         order.append("open")
 
     original = browser.execute_action
@@ -222,3 +222,37 @@ async def test_sign_in_page_asks_once_then_carries_on(monkeypatch):
     assert asked == ["login_wall"]
     assert len(browser.actions) == 1          # first click skipped while the user signed in
     assert sent(ui, "send_task_complete") == [("signed in and done",)]
+
+
+async def test_a_task_naming_a_site_opens_the_tab_there_and_the_plan_knows_it():
+    # F5 (live round, 2026-10-21): the tab opened on google.com, then went to MakeMyTrip.
+    from tests.fakes import _prompt_text
+    opened, prompts = [], []
+
+    async def open_browser(url=""):
+        opened.append(url)
+
+    caller = FakeCaller(actions=[action_reply("TASK COMPLETE: done")])
+    original = caller.ask
+
+    async def spy(model, contents, config=None):
+        prompts.append(_prompt_text(contents))
+        return await original(model, contents, config)
+
+    caller.ask = spy
+    await run_task("s1", "on makemytrip, fill in a flight from Delhi to Mumbai", "", FakeBrowser(), caller=caller,
+                   ui=FakeUI(), cfg=cfg(), timing=NO_WAIT, open_browser=open_browser)
+    assert opened == ["https://www.makemytrip.com/"]
+    assert any('already on: "https://www.makemytrip.com/"' in p for p in prompts if "You plan browser tasks" in p)
+
+
+async def test_an_address_given_by_the_dashboard_still_wins():
+    opened = []
+
+    async def open_browser(url=""):
+        opened.append(url)
+
+    await run_task("s1", "play lofi on youtube", "https://music.example.com/", FakeBrowser(),
+                   caller=FakeCaller(actions=[action_reply("TASK COMPLETE: done")]), ui=FakeUI(),
+                   cfg=cfg(), timing=NO_WAIT, open_browser=open_browser)
+    assert opened == ["https://music.example.com/"]

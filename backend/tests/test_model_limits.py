@@ -107,7 +107,7 @@ async def test_task_stops_at_once_when_every_model_is_used_up(monkeypatch):
         used_up.mark(name)
     opened = []
 
-    async def open_browser():
+    async def open_browser(url=""):
         opened.append(True)
 
     browser = FakePageBrowser([page("about:blank")])

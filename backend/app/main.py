@@ -281,10 +281,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             run_live_stream(session_id, task, browser, grandparents_mode, last_action_time_ref, completion_text_ref, live_session_ref)
                         )
 
-                async def open_browser(browser=browser, start_url=start_url):
-                    """Called by the steps flow once it knows this is a real task."""
+                async def open_browser(url: str = "", browser=browser):
+                    """Called by the steps flow once it knows this is a real task,
+                    with the page to open first (empty: the search page)."""
                     try:
-                        await browser.launch(start_url=start_url)
+                        await browser.launch(start_url=url)
                     except Exception as launch_err:
                         raise RuntimeError(f"Failed to launch browser: {launch_err}") from launch_err
                     start_narration()
