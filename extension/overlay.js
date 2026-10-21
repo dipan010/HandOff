@@ -4,6 +4,7 @@
 window.udaaOverlay = {
     drawHighlight: (x, y, width = 20, height = 20) => {
         const el = document.createElement("div");
+        el.className = "udaa-highlight";   // HandOff's own mark: not a change made by the click
         el.style.position = "fixed";
         el.style.left = `${x - width / 2}px`;
         const settingsTop = `${y - height / 2}px`; // Fix implicit global

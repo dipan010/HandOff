@@ -2,7 +2,7 @@
 
 Two kinds of check:
 - `changed()` is free: after an action, did the page address or the screen change,
-  and did the extension report success?
+  did the extension report success, and what did it see change on the page?
 - `is_step_done()` asks a model to compare the screen with the step's
   "done when" description. `page_text` will carry the page map once the
   extension can send one; until then only the screenshot and address are used.
@@ -16,6 +16,7 @@ from urllib.parse import unquote_plus, urlparse
 
 from google.genai import types
 
+from app.browser.page_view import change_words, structure_hash
 from app.steps.model_call import Caller, ask_json
 from app.steps.plan import Step
 from app.tools.web_rules import KNOWN_SITES
@@ -28,10 +29,14 @@ class ScreenState:
     url: str
     screen_hash: str
     page_hash: str = ""   # from the page map; ignores videos and animations
+    items_hash: str = ""  # the same, but scrolling alone doesn't change it
 
     @classmethod
-    def of(cls, url: str, screenshot: bytes | None, page_hash: str = "") -> "ScreenState":
-        return cls(url=url or "", screen_hash=hashlib.md5(screenshot or b"").hexdigest(), page_hash=page_hash)
+    def of(cls, url: str, screenshot: bytes | None, page_hash: str = "", page: dict | None = None) -> "ScreenState":
+        if page is not None:
+            page_hash = structure_hash(page)
+        return cls(url=url or "", screen_hash=hashlib.md5(screenshot or b"").hexdigest(), page_hash=page_hash,
+                   items_hash=structure_hash(page, scroll=False) if page is not None else "")
 
 
 @dataclass
@@ -46,12 +51,30 @@ NO_VISIBLE_CHANGE_OK = {"wait_5_seconds", "hover_at", "get_current_url"}
 
 def changed(before: ScreenState, after: ScreenState, action_results: list[dict], action_names: list[str]) -> CheckResult:
     """Did the last batch of actions do anything?"""
-    failed = [r for r in action_results if isinstance(r, dict) and r.get("success") is False]
+    results = [r for r in action_results if isinstance(r, dict)]
+    moved = before.url != after.url
+    # A click that opened a new page may leave before the page can answer.
+    failed = [r for r in results if r.get("success") is False and not (moved and r.get("no_answer"))]
     if failed:
         detail = failed[0].get("detail") or failed[0].get("error") or "no detail"
         return CheckResult(False, f"The browser reported that '{failed[0].get('action', 'the action')}' failed: {detail}.")
-    if before.url != after.url:
+    if moved:
         return CheckResult(True, f"The page changed to {after.url}.")
+
+    # What the extension saw change while each click or typing action ran.
+    reports = [r.get("page_change") for r in results if isinstance(r.get("page_change"), dict)]
+    seen = [c for c in reports if c.get("changed")]
+    if seen:
+        return CheckResult(True, f"The page changed: {'; '.join(change_words(c) for c in seen)}.")
+    if results and all(r.get("already") for r in results):
+        return CheckResult(True, "Nothing needed to change.")
+    if reports and len(reports) == len(results) and before.items_hash and after.items_hash:
+        # Every action was watched and none changed anything. Bringing the
+        # target into view may have scrolled the page; that alone isn't an effect.
+        if before.items_hash != after.items_hash:
+            return CheckResult(True, "The page changed.")
+        return CheckResult(False, "Nothing on the page changed after that action.")
+
     if before.page_hash and after.page_hash:
         # Compare what's on the page, not pixels: a playing video changes every frame.
         if before.page_hash != after.page_hash:

@@ -209,6 +209,7 @@ function executeInWorkTab(command) {
                 reportResult(response || {
                     action: command.action,
                     success: false,
+                    no_answer: true,   // e.g. a click that opened a new page before the reply was sent
                     detail: "The page did not answer (it may still be loading).",
                     url: tab.url,
                 });

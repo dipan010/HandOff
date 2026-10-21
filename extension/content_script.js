@@ -387,7 +387,186 @@ async function _resolveTypeTarget(clickX, clickY, timeoutMs = 800) {
 // ACTION DISPATCHER
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── Did the action do anything? ──────────────────────────────────────────
+// Clicks and typing are watched: what was added or removed, opened or closed,
+// ticked, typed into or disabled, until the page goes quiet. The backend uses
+// this as a cheap check that the action had an effect (spec §7).
+const WATCHED_ACTIONS = new Set([
+    "click_element", "type_text", "choose_option", "set_checked", "press_key",
+    "click_at", "click", "left_click", "type_text_at", "type", "select_option", "click_option",
+]);
+const CHANGE_QUIET_MS = 250;   // no change for this long after the action: the page is done
+const CHANGE_MAX_MS = 1000;    // never wait longer than this after the action
+const CHANGE_ATTRIBUTES = ["aria-expanded", "open", "hidden", "aria-hidden", "disabled", "aria-disabled",
+    "aria-checked", "aria-selected", "aria-pressed"];
+const IGNORED_TAGS = new Set(["SCRIPT", "STYLE", "LINK", "META", "NOSCRIPT"]);
+
+// Parts of the page that change by themselves (clocks, a playing video's time,
+// carousels, live prices) are noticed between HandOff's actions while a task
+// runs. Their changes during an action are not the action's doing.
+const BY_ITSELF_MS = 3000;
+const _changedByItself = new WeakMap();   // element -> when it last changed by itself
+let _byItselfObserver = null;
+let _watchingAction = 0;
+
+function _changedElement(record) {
+    const node = record.target;
+    return node.nodeType === 1 ? node : node.parentElement;
+}
+
+function _noteChangesByItself(records) {
+    const now = Date.now();
+    for (const r of records) {
+        const el = _changedElement(r);
+        if (el) _changedByItself.set(el, now);
+    }
+}
+
+function _watchPageBetweenActions(on) {
+    if (on && !_byItselfObserver) {
+        _byItselfObserver = new MutationObserver((records) => { if (!_watchingAction) _noteChangesByItself(records); });
+        _byItselfObserver.observe(document.documentElement, {
+            subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: CHANGE_ATTRIBUTES,
+        });
+    } else if (!on && _byItselfObserver) {
+        _byItselfObserver.disconnect();
+        _byItselfObserver = null;
+    }
+}
+
+function _changesByItself(record) {
+    const el = _changedElement(record);
+    const last = el && _changedByItself.get(el);
+    if (!last || Date.now() - last > BY_ITSELF_MS) return false;
+    _changedByItself.set(el, Date.now());   // still changing: keep treating it as changing by itself
+    return true;
+}
+
+function _isOurs(node) {
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    return !!(el && el.closest && el.closest("[id^='udaa-'], .udaa-highlight"));
+}
+
+function _controlState() {
+    const state = new Map();
+    for (const el of document.querySelectorAll("input, select, textarea, [contenteditable=''], [contenteditable='true']")) {
+        state.set(el, {
+            value: el.isContentEditable ? el.textContent : el.value,
+            checked: !!el.checked,
+            disabled: !!el.disabled,
+        });
+        if (state.size >= 3000) break;
+    }
+    return state;
+}
+
+function _isTextBox(el) {
+    return el.tagName === "TEXTAREA" || el.isContentEditable ||
+        (el.tagName === "INPUT" && !["checkbox", "radio", "button", "submit", "reset", "file", "hidden"].includes(el.type));
+}
+
+async function _watchChanges(run) {
+    const counts = { added: 0, removed: 0, opened: 0, closed: 0, ticked: 0, unticked: 0,
+                     typed: 0, chosen: 0, disabled: 0, enabled: 0, text: 0 };
+    let lastChange = 0;
+    let leftPage = false;
+    const counted = (node) => node.nodeType === 1 && !IGNORED_TAGS.has(node.tagName) && !_isOurs(node);
+    const observer = new MutationObserver((records) => {
+        for (const r of records) {
+            if (_isOurs(r.target) || _changesByItself(r)) continue;
+            let seen = false;
+            if (r.type === "childList") {
+                const added = [...r.addedNodes].filter(counted).length;
+                const removed = [...r.removedNodes].filter(counted).length;
+                counts.added += added;
+                counts.removed += removed;
+                const textNodes = [...r.addedNodes, ...r.removedNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+                if (!added && !removed && textNodes) counts.text += 1;
+                seen = added || removed || textNodes;
+            } else if (r.type === "characterData") {
+                if (!r.target.textContent.trim() && !(r.oldValue || "").trim()) continue;   // spacing only
+                counts.text += 1;
+                seen = true;
+            } else if (r.type === "attributes") {
+                const now = r.target.getAttribute(r.attributeName);
+                const was = r.oldValue;
+                const on = (v) => v !== null && v !== "false";
+                if (now === was) continue;
+                if (r.attributeName === "aria-expanded" || r.attributeName === "open") {
+                    on(now) ? counts.opened++ : counts.closed++;
+                } else if (r.attributeName === "hidden" || r.attributeName === "aria-hidden") {
+                    on(now) ? counts.closed++ : counts.opened++;
+                } else if (r.attributeName === "disabled" || r.attributeName === "aria-disabled") {
+                    if (r.target.tagName === "INPUT" || r.target.tagName === "SELECT" || r.target.tagName === "TEXTAREA" ||
+                        r.target.tagName === "BUTTON") continue;   // counted from the control's own state below
+                    on(now) ? counts.disabled++ : counts.enabled++;
+                } else if (r.attributeName === "aria-checked" || r.attributeName === "aria-pressed") {
+                    now === "true" ? counts.ticked++ : counts.unticked++;
+                } else {
+                    counts.chosen++;
+                }
+                seen = true;
+            }
+            if (seen) lastChange = Date.now();
+        }
+    });
+    const onLeave = () => { leftPage = true; };
+    window.addEventListener("pagehide", onLeave);
+    window.addEventListener("beforeunload", onLeave);
+    // Changes made just before the action started were the page's own.
+    if (_byItselfObserver) _noteChangesByItself(_byItselfObserver.takeRecords());
+    _watchingAction++;
+    const before = _controlState();
+    const buttonsBefore = new Map([...document.querySelectorAll("button")].slice(0, 3000).map(b => [b, b.disabled]));
+    observer.observe(document.documentElement, {
+        subtree: true, childList: true, characterData: true, characterDataOldValue: true,
+        attributes: true, attributeOldValue: true, attributeFilter: CHANGE_ATTRIBUTES,
+    });
+
+    let result;
+    try {
+        result = await run();
+        const ended = Date.now();
+        while (!leftPage) {
+            const now = Date.now();
+            if (now - ended >= CHANGE_MAX_MS) break;
+            if (now - Math.max(ended, lastChange) >= CHANGE_QUIET_MS) break;
+            await new Promise(res => setTimeout(res, 50));
+        }
+    } finally {
+        observer.disconnect();
+        _watchingAction--;
+        if (_byItselfObserver && !_watchingAction) _byItselfObserver.takeRecords();   // made during the action
+        window.removeEventListener("pagehide", onLeave);
+        window.removeEventListener("beforeunload", onLeave);
+    }
+
+    for (const [el, was] of before) {
+        if (!el.isConnected) continue;
+        const value = el.isContentEditable ? el.textContent : el.value;
+        if (el.type === "checkbox" || el.type === "radio") {
+            if (!!el.checked !== was.checked) el.checked ? counts.ticked++ : counts.unticked++;
+        } else if (value !== was.value) {
+            _isTextBox(el) ? counts.typed++ : counts.chosen++;
+        }
+        if (!!el.disabled !== was.disabled) el.disabled ? counts.disabled++ : counts.enabled++;
+    }
+    for (const [b, was] of buttonsBefore) {
+        if (b.isConnected && b.disabled !== was) b.disabled ? counts.disabled++ : counts.enabled++;
+    }
+
+    const change = { changed: leftPage || Object.values(counts).some(n => n > 0), ...counts };
+    if (leftPage) change.left_page = true;
+    if (result && typeof result === "object") return { ...result, page_change: change };
+    return { success: !!result, page_change: change };
+}
+
 async function executeAction(action, args) {
+    if (!WATCHED_ACTIONS.has(action)) return _doAction(action, args);
+    return _watchChanges(() => _doAction(action, args));
+}
+
+async function _doAction(action, args) {
     if (action === "click_at" || action === "click" || action === "left_click") {
         const { x, y } = _scaleCoords(args);
         return window.udaa.performClick(x, y);
@@ -620,6 +799,7 @@ async function _runElementAction(action, args) {
         if (el && el.tagName === "SELECT") {
             const opt = _matchOption([...el.options], args.text);
             if (!opt) return { success: false, detail: `No option like "${args.text}" in that dropdown.`, options: [...el.options].slice(0, 30).map(o => o.text.trim()) };
+            if (el.value === opt.value) return { success: true, chosen: opt.text.trim(), already: true };
             el.value = opt.value;
             el.dispatchEvent(new Event("input", { bubbles: true }));
             el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -642,10 +822,9 @@ async function _runElementAction(action, args) {
         const el = page.element(args.element_id);
         if (!el) return _gone(args.element_id);
         const now = !!(el.checked || el.getAttribute("aria-checked") === "true");
-        if (now !== !!args.checked) {
-            await _bringIntoView(el);
-            _clickElement(el);
-        }
+        if (now === !!args.checked) return { success: true, already: true };
+        await _bringIntoView(el);
+        _clickElement(el);
         return true;
     }
 
@@ -976,6 +1155,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.payload) {
             const status = request.payload.status;
             _taskBusy = BUSY_STATUSES.has(status);
+            _watchPageBetweenActions(_taskBusy);
             const isGP = request.payload.grandparents_mode;
             let msg = request.payload.message ? `UDAA: ${request.payload.message}` : status.toUpperCase();
 

@@ -12,7 +12,7 @@ from typing import Any
 from google.genai import types
 
 from app.browser.base import BrowserAdapter
-from app.browser.page_view import element_by_id, find_field
+from app.browser.page_view import change_words, element_by_id, find_field
 from app.tools.web_rules import route, search_url
 
 
@@ -294,7 +294,12 @@ class BrowserTools:
     async def _do(self, action: str, args: dict, done: str, failed: str) -> ToolResult:
         reply = await self.browser.execute_action(action, args)
         if _reply_ok(reply):
-            extra = f" ({reply['chosen']})" if isinstance(reply, dict) and reply.get("chosen") else ""
+            extra = f" ({reply['chosen']})" if reply.get("chosen") else ""
+            change = reply.get("page_change")
+            if reply.get("already"):
+                extra += " It was already like that."
+            elif isinstance(change, dict):
+                extra += f" The page changed: {change_words(change)}." if change.get("changed") else " Nothing on the page changed."
             return ToolResult(True, done + extra, data=reply)
         stale = isinstance(reply, dict) and bool(reply.get("stale"))
         detail = _reply_detail(reply, failed)

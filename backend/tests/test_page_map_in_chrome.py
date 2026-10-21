@@ -108,17 +108,20 @@ def test_actions_by_element_number_change_the_page(actions):
 
 def test_action_replies(actions):
     results = actions["results"]
-    assert results["type"] is True
-    assert results["select"] == {"success": True, "chosen": "Sleeper"}
+    # Clicks and typing also say what they changed on the page.
+    assert results["type"]["success"] is True and results["type"]["page_change"]["typed"] == 1
+    assert results["select"]["success"] is True and results["select"]["chosen"] == "Sleeper"
+    assert results["select"]["page_change"]["chosen"] == 1
     assert results["custom"]["success"] is True
     assert results["stale"]["success"] is False and results["stale"]["stale"] is True
     assert results["map"]["success"] is True and results["map"]["page"]["elements"]
 
 
-def run_fixture(name: str) -> dict:
+def run_fixture(name: str, wait_ms: int = 0) -> dict:
+    budget = [f"--virtual-time-budget={wait_ms}"] if wait_ms else []
     dom = subprocess.run(
         [CHROME, "--headless=new", "--disable-gpu", "--allow-file-access-from-files",
-         "--window-size=1200,800", "--dump-dom", (REPO / "extension" / "tests" / name).as_uri()],
+         "--window-size=1200,800", *budget, "--dump-dom", (REPO / "extension" / "tests" / name).as_uri()],
         capture_output=True, text=True, timeout=60,
     ).stdout
     match = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
@@ -156,3 +159,38 @@ def test_tables_and_repeated_blocks_are_pulled_out():
     assert items[1]["text"] == "JBL Go 3 speaker · ₹2,999 · 4.4 stars"
     assert items[1]["link"] == "https://shop.example.com/p/2"
     assert not any("Home page link" in i["text"] for lst in found["lists"] for i in lst["items"])   # menus left out
+
+
+@pytest.fixture(scope="module")
+def page_changes():
+    return run_fixture("change_fixture.html", wait_ms=15000)
+
+
+def test_clicks_report_what_changed_on_the_page(page_changes):
+    assert page_changes["nothing"]["changed"] is False
+    assert page_changes["add"]["changed"] is True and page_changes["add"]["added"] == 3
+    assert page_changes["menu"]["opened"] >= 1
+    assert page_changes["once"]["disabled"] == 1
+    assert page_changes["later"]["changed"] is True          # a change shortly after the click counts
+
+
+def test_changes_the_page_makes_by_itself_are_not_the_click(page_changes):
+    # The fixture's clock ticks every 100 ms all through these actions.
+    assert page_changes["nothing"]["changed"] is False
+    assert page_changes["nothing"]["ms"] < 800          # didn't wait the full second for quiet
+    assert page_changes["add"]["added"] == 3 and page_changes["add"]["text"] == 0
+
+
+def test_ticking_and_typing_count_as_changes(page_changes):
+    assert page_changes["tick"]["ticked"] == 1
+    assert page_changes["typed"]["typed"] == 1
+
+
+def test_own_highlight_and_style_classes_are_not_changes(page_changes):
+    # The click highlight HandOff draws, and a class added to the clicked button, are not effects.
+    assert page_changes["nothing"]["added"] == 0
+    assert page_changes["pressed"]["changed"] is False
+
+
+def test_ticking_a_box_that_is_already_ticked_says_so(page_changes):
+    assert page_changes["already"]["success"] is True and page_changes["already"]["already"] is True

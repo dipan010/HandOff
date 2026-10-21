@@ -217,7 +217,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
 
         # Did the last batch of actions change anything?
         if before is not None:
-            effect = changed(before, ScreenState.of(url, shot, structure_hash(page)), last_results, last_names)
+            effect = changed(before, ScreenState.of(url, shot, page=page), last_results, last_names)
             before = None
             if not effect.ok:
                 failures += 1
@@ -271,7 +271,7 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             pending.append(types.Part(text="Please answer with a tool call."))
             continue
 
-        page_before = ScreenState.of(url, shot, structure_hash(page))
+        page_before = ScreenState.of(url, shot, page=page)
         names, results = [], []
         outcome = None
 
@@ -404,7 +404,9 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
 
             result = await tools.run(name, args)
             names.append(name)
-            results.append({"action": name, "success": result.ok, "detail": result.message})
+            reply = result.data if isinstance(result.data, dict) else {}
+            results.append({"action": name, "success": result.ok, "detail": result.message,
+                            **{k: reply[k] for k in ("page_change", "already", "no_answer") if k in reply}})
             run.history.append(f"{name}({', '.join(f'{k}={v}' for k, v in args.items())}) -> {'ok' if result.ok else result.message}")
             message = result.message
             if result.stale:

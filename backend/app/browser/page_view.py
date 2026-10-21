@@ -62,11 +62,12 @@ def page_view_text(page: dict | None, note: str = "") -> str:
     return "\n".join(lines)
 
 
-def structure_hash(page: dict | None) -> str:
+def structure_hash(page: dict | None, scroll: bool = True) -> str:
     """Changes when the address, the items, their values or states change.
 
     Unlike a screenshot hash it ignores videos playing, animations and ads,
     so an action that did nothing really does look like nothing changed.
+    With scroll=False, scrolling alone doesn't change it.
     """
     if not page:
         return ""
@@ -74,7 +75,7 @@ def structure_hash(page: dict | None) -> str:
         "url": page.get("url"),
         "dialog": page.get("dialog_open"),
         "items": [(e.get("role"), e.get("label"), e.get("value"), tuple(e.get("state") or [])) for e in page.get("elements") or []],
-        "scroll": (page.get("scroll") or {}).get("y"),
+        "scroll": (page.get("scroll") or {}).get("y") if scroll else None,
     }
     return hashlib.md5(json.dumps(shape, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -117,3 +118,32 @@ def find_field(page: dict | None, label: str, used: set | None = None) -> dict |
         if score > best_score:
             best, best_score = el, score
     return best if best_score >= 0.5 else None
+
+
+# What the extension saw change after a click or typing action, in plain words.
+CHANGE_WORDS = [
+    ("added", "{n} item{s} added"),
+    ("removed", "{n} item{s} removed"),
+    ("opened", "something opened"),
+    ("closed", "something closed"),
+    ("ticked", "{n} box{es} ticked"),
+    ("unticked", "{n} box{es} unticked"),
+    ("typed", "text typed"),
+    ("chosen", "a choice made"),
+    ("disabled", "{n} item{s} greyed out"),
+    ("enabled", "{n} item{s} made usable"),
+    ("text", "some text changed"),
+]
+
+
+def change_words(change: dict | None) -> str:
+    if not change:
+        return ""
+    if change.get("left_page"):
+        return "a new page started loading"
+    words = []
+    for key, phrase in CHANGE_WORDS:
+        n = change.get(key) or 0
+        if n:
+            words.append(phrase.format(n=n, s="" if n == 1 else "s", es="" if n == 1 else "es"))
+    return ", ".join(words)
