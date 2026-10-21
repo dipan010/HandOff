@@ -1308,7 +1308,7 @@ setTimeout(() => {
     if (window === window.top && sensitiveDomains.some(d => url.includes(d)) && !document.getElementById("udaa-security-badge")) {
         const badge = document.createElement("div");
         badge.id = "udaa-security-badge";
-        badge.innerHTML = "🔒 <b>HandOff</b> &nbsp;|&nbsp; A sign-in or payment page: HandOff never types passwords or card numbers.";
+        badge.innerHTML = "🔒 <b>HandOff</b> &nbsp;|&nbsp; This is a sign-in or payment page.";
         badge.style.position = "fixed";
         badge.style.top = "20px";
         badge.style.left = "50%";
