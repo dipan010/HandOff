@@ -21,22 +21,35 @@ NARRATION_SCREENSHOT_INTERVAL = 6.0   # seconds between screenshots sent to Live
 MIN_NARRATION_GAP             = 5.0   # minimum seconds between narration text sends
 ACTION_NARRATION_COOLDOWN     = 4.0   # suppress narration for N seconds after an action
 
+# Say only what has happened: the narrator is told about each action as it
+# starts, and sees the screen now and then. Guessing ahead made it announce
+# pages that weren't open yet.
+STICK_TO_WHAT_HAPPENED = (
+    "Only describe what HandOff has told you it is doing, or what the latest screenshot shows. "
+    "Never say a page is open or something is done until HandOff says so or the screenshot shows it."
+)
+
 NARRATION_PROMPT_GRANDPARENTS = (
-    "You are a friendly, patient accessibility companion helping a senior citizen use a computer. "
-    "You observe their screen and gently explain what the automated helper is doing in very simple, "
+    "You are a friendly, patient companion helping a senior citizen use a computer. "
+    "You gently explain what HandOff, the helper, is doing in very simple, "
     "reassuring terms. Focus on comfort and clarity. Speak directly to them like a helpful grandchild. "
-    "Keep sentences short and slow-paced. Never use technical jargon like 'agent', 'URL', 'clicking', 'DOM', or 'UI'. "
-    "Example: 'I'm opening up the train booking website for you now. Just give me a moment to find the right page.'"
+    "Keep sentences short and slow-paced. Never use technical words like 'URL', 'clicking', 'DOM', or 'UI'. "
+    "Example: 'I'm opening up the train booking website for you now. Just give me a moment.' "
+    + STICK_TO_WHAT_HAPPENED
 )
 
 NARRATION_PROMPT_DEFAULT = (
-    "You are a real-time screen narrator for a digital accessibility agent. "
-    "You observe screenshots of a web browser and describe what you see "
-    "in simple, clear language. Focus on: what is currently on screen, "
-    "what the agent is doing, and what will happen next. "
+    "You narrate what HandOff, a helper that works in a web browser, is doing, "
+    "in simple, clear language. "
     "Keep narrations short (1-2 sentences). "
-    "Use friendly, encouraging language."
+    "Use friendly, encouraging language. "
+    + STICK_TO_WHAT_HAPPENED
 )
+
+
+def opening_line(task: str) -> str:
+    return (f"The user asked HandOff to: {task}. Nothing has been done yet; "
+            "HandOff will tell you about each step as it starts.")
 
 
 async def run_live_stream(
@@ -78,7 +91,7 @@ async def run_live_stream(
 
             await session.send_client_content(
                 turns=types.Content(
-                    parts=[types.Part(text=f"The user wants to: {task}")]
+                    parts=[types.Part(text=opening_line(task))]
                 )
             )
 

@@ -410,6 +410,9 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             await run.status("executing", action_now(name, args, page))
             await log_action(run.session_id, run.actions_used, name, args)
 
+            # Tell the narrator as the action starts, so speech keeps up with it.
+            await narrate_action(name, args, run.last_action_time_ref, run.live_session_ref,
+                                 grandparents_mode=run.grandparents_mode)
             result = await tools.run(name, args)
             names.append(name)
             reply = result.data if isinstance(result.data, dict) else {}
@@ -421,8 +424,6 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 message += " The page has changed; use the numbers in the new page view."
             pending.append(_response(name, result.ok, message))
 
-            await narrate_action(name, args, run.last_action_time_ref, run.live_session_ref,
-                                 grandparents_mode=run.grandparents_mode)
             await run.ui.send_action(run.session_id, result.data if isinstance(result.data, dict) else {"action": name, "success": result.ok}, run.actions_used)
             await update_session_state(run.session_id, "executing", f"Action {run.actions_used}: {name}")
             await asyncio.sleep(run.timing.after_action)

@@ -323,9 +323,7 @@ async def run_agent_loop(
             # Write to the local action log
             await log_action(session_id, turn + 1, action_name, action_args)
 
-            # Execute the action
-            result = await browser.execute_action(action_name, action_args)
-            
+            # Tell the narrator as the action starts, so speech keeps up with it.
             await narrate_action(
                 action_name,
                 action_args,
@@ -333,6 +331,9 @@ async def run_agent_loop(
                 live_session_ref,
                 grandparents_mode=grandparents_mode
             )
+
+            # Execute the action
+            result = await browser.execute_action(action_name, action_args)
 
             # Send action result to frontend
             await ws_manager.send_action(session_id, result, turn + 1)

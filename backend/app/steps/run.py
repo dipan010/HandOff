@@ -404,13 +404,14 @@ class TaskRun:
             await self.status("executing", action_now(name, args, None))
             await log_action(self.session_id, self.actions_used, name, args)
 
+            # Tell the narrator as the action starts, so speech keeps up with it.
+            await narrate_action(name, args, self.last_action_time_ref, self.live_session_ref,
+                                 grandparents_mode=self.grandparents_mode)
             result = await self.browser.execute_action(name, args)
             results.append(result if isinstance(result, dict) else {})
             names.append(name)
             self.history.append(f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})")
 
-            await narrate_action(name, args, self.last_action_time_ref, self.live_session_ref,
-                                 grandparents_mode=self.grandparents_mode)
             await self.ui.send_action(self.session_id, result, self.actions_used)
             await update_session_state(self.session_id, "executing", f"Action {self.actions_used}: {name}")
             await asyncio.sleep(self.timing.after_action)
