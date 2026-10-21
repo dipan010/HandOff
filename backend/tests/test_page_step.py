@@ -267,3 +267,25 @@ async def test_done_in_the_same_turn_as_an_action_is_checked_on_the_new_page():
     await start(caller, browser, task="continue the form")
     assert seen and "https://example.com/thanks" in seen[0]
     assert "[1] link \"Home\"" in seen[0]
+
+
+async def test_a_form_task_offers_fill_form_on_every_step():
+    # Live round, 2026-10-21: the plan's step "Click on the suggestion 'Delhi (DEL)'"
+    # didn't sound like a form, so fill_form was never offered on a form task.
+    offered = []
+    form = page("https://www.makemytrip.com/", ("dropdown", "From"), ("dropdown", "To"), ("button", "Search"))
+    browser = FakePageBrowser([form], frozen=True)
+    caller = FakeCaller(
+        plan=[{"steps": [{"title": "Click on the suggestion 'Delhi (DEL)'", "done_when": "From shows Delhi"}]}],
+        actions=[action_reply(call=("task_complete", {"summary": "Done."}))],
+    )
+    original = caller.ask
+
+    async def spy(model, contents, config=None):
+        if config is not None and getattr(config, "tools", None):
+            offered.append({d.name for d in config.tools[0].function_declarations})
+        return await original(model, contents, config)
+
+    caller.ask = spy
+    await start(caller, browser, task="on makemytrip, fill in a flight from Delhi to Mumbai")
+    assert "fill_form" in offered[0]

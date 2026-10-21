@@ -168,8 +168,9 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             temperature=0.2,
         )
 
-    # Start with the tools that fit this step; once a try fails, offer them all.
-    config = config_with(tools_for_step(f"{step.title} {step.done_when}"))
+    # Start with the tools that fit this step and the task (a plan can split a
+    # form into steps that don't sound like one); once a try fails, offer them all.
+    config = config_with(tools_for_step(f"{step.title} {step.done_when} {run.task}"))
     all_offered = False
     contents: list = [types.Content(role="user", parts=[types.Part(text=opening_text(run, step, plan))])]
     pending: list[types.Part] = []           # tool answers to send with the next page view
