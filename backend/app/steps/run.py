@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from google.genai import types
 
@@ -192,6 +193,14 @@ class TaskRun:
     def narrator_on(self) -> bool:
         """The narrator is speaking for this task, so it is the only voice."""
         return bool(self.live_session_ref and self.live_session_ref[0] is not None)
+
+    async def tell_narrator(self, text: str) -> None:
+        """A line for the narrator to say now, before the thing it describes happens."""
+        if self.narrator_on():
+            try:
+                await self.live_session_ref[0].send_client_content(turns=types.Content(parts=[types.Part(text=text)]))
+            except Exception:
+                pass
 
     async def say_on_it(self) -> None:
         lines = ACK_LINES_WARM if self.grandparents_mode else ACK_LINES
@@ -451,11 +460,13 @@ async def run_task(
     cfg=None,
     timing: Timing | None = None,
     open_browser=None,
+    start_narration=None,
 ) -> None:
     """Same arguments as the classic loop, so main.py can call either.
 
-    `open_browser` is awaited once the request turns out to be a real task;
-    it opens the tab and starts narration. Chat never opens anything.
+    Once the request turns out to be a real task, `start_narration` is called
+    and the narrator is told where HandOff is going, and then `open_browser`
+    opens the tab there. Chat never opens anything.
     """
     cfg = cfg or get_settings()
     run = TaskRun(
@@ -493,6 +504,12 @@ async def run_task(
     if not start_url:
         start_url = first_page_for(task)
         run.start_url = start_url
+    # The narrator first, so its words come before what they describe.
+    if start_narration is not None:
+        start_narration()
+    await run.say_on_it()
+    where = (urlparse(start_url).hostname or "").removeprefix("www.") if start_url else ""
+    await run.tell_narrator(f"Opening {where}." if where else "Opening the browser.")
     if open_browser is not None:
         await open_browser(start_url)
     # Nothing works until the Chrome extension has connected to this session.
@@ -506,7 +523,6 @@ async def run_task(
     start_live_view = getattr(browser, "start_live_view", None)
     if start_live_view is not None:
         await start_live_view()
-    await run.say_on_it()
     plan_model = cfg.STRONG_MODEL if sorted_request.effort == "hard" else cfg.FAST_MODEL
     run.action_model = plan_model
     await run.status("thinking", "Planning the steps...")

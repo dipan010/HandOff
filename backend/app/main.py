@@ -288,14 +288,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         await browser.launch(start_url=url)
                     except Exception as launch_err:
                         raise RuntimeError(f"Failed to launch browser: {launch_err}") from launch_err
-                    start_narration()
 
                 if use_steps:
                     agent_task = asyncio.create_task(
                         # No narrator slot when narration is off, so nothing waits for one.
                         run_task(session_id, task, start_url, browser, patience_mode, grandparents_mode, last_action_time_ref, completion_text_ref,
                                  live_session_ref if narration_enabled else None,
-                                 open_browser=open_browser)
+                                 open_browser=open_browser, start_narration=start_narration)
                     )
                 else:
                     agent_task = asyncio.create_task(
