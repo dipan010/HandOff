@@ -2,8 +2,6 @@
 
 **HandOff** is an assistant that acts as the "hands on screen" for people who find websites hard to use. You tell it what you want; it clicks, types and scrolls in your own Chrome while describing out loud what it is doing. It uses **Gemini 2.5 Computer Use** to decide what to do on screen and **Gemini Live (native audio)** to talk you through it.
 
-Built for the **Gemini Live Agent Challenge** under the **UI Navigator** category.
-
 ---
 
 ## 🌟 Key Features
@@ -87,12 +85,3 @@ Execute these tasks in **Live Mode** to see the recent accuracy and synchronizat
     - The agent will use the search bar, type the query, and press Enter.
     - It will read the page content and provide a verbal/text summary of the founders.
     - This demonstrates the agent's ability to transition from "acting" to "interpreting" information.
-
----
-
-## 🏆 Hackathon Alignment: UI Navigator Track
-
-HandOff addresses the core requirements of the **UI Navigator** track by:
-1. **Becoming the user's hands**: Direct physical manipulation of the browser.
-2. **Visual Understanding**: Interpreting UI with or *without* DOM access (Live mode is 100% visual coordinate based).
-3. **Multimodal Core**: Every action is guided by the latest Gemini multimodal screenshot processing.
