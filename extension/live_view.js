@@ -64,7 +64,10 @@ class LiveView {
             const image = await this.shrink(shot.dataUrl);
             if (image && this.on) this.send({ image, url: shot.url });
         } catch (e) {
-            // A missed frame is fine; the next one follows shortly.
+            // A missed frame is fine; the next one follows shortly. Say so once,
+            // so a live view that never works can be traced.
+            if (!this.warned) console.warn("HandOff: live view frame failed:", e);
+            this.warned = true;
         } finally {
             this.busy = false;
         }

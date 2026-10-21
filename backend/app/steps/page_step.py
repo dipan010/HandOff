@@ -209,9 +209,15 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
         page = settled if settled is not None else await tools.page_map()
         settled = None
         tools.last_page = page
-        shot = await run.screenshot()
+        # A full screenshot only when the model will look at it: the page view
+        # usually says enough, and the dashboard has its own live view.
+        few_items = page is not None and len(page.get("elements") or []) < 3
+        add_shot = want_screenshot or page is None or few_items or failures >= 2
+        want_screenshot = False
+        shot = await run.screenshot() if add_shot else None
         if shot:
             await run.show_and_save(shot)
+        add_shot = bool(shot)
         url = (page or {}).get("url") or await run.url()
         notes = []
 
@@ -224,6 +230,11 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
                 last_failure = effect.reason
                 await run.ui.send_step_update(run.session_id, step.number, "retrying", effect.reason)
                 notes.append(f"Result of your last actions: {effect.reason} Try a different way.")
+                if shot is None and failures >= 2:
+                    shot = await run.screenshot()
+                    if shot:
+                        await run.show_and_save(shot)
+                    add_shot = bool(shot)
 
         if page is None:
             unreadable += 1
@@ -232,10 +243,6 @@ async def do_step_by_page(run, step: Step, plan: list[Step]):
             want_screenshot = True
         else:
             unreadable = 0
-
-        few_items = page is not None and len(page.get("elements") or []) < 3
-        add_shot = bool(shot) and (want_screenshot or page is None or few_items or failures >= 2)
-        want_screenshot = False
 
         parts = pending + [types.Part(text=page_view_text(page, " ".join(notes)))]
         if add_shot:

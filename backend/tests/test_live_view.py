@@ -122,3 +122,40 @@ def test_an_extension_that_reconnects_mid_task_resumes_the_live_view(monkeypatch
     assert to_dashboard == ["c21hbGw="]
     assert adapter._latest_url == "https://b.example/"
     assert adapter._latest_screenshot_bytes is None          # a live frame is not HandOff's screenshot
+
+
+class CountsScreenshots(FakePageBrowser):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.screenshots = 0
+
+    async def capture_screenshot(self, min_timestamp: float = 0) -> bytes:
+        self.screenshots += 1
+        return await super().capture_screenshot(min_timestamp)
+
+
+async def test_no_full_screenshots_while_the_page_can_be_read():
+    from tests.test_page_step import PLAYING_PAGE, RESULTS_PAGE, SEARCH_PAGE, start
+    browser = CountsScreenshots([SEARCH_PAGE, RESULTS_PAGE, PLAYING_PAGE])
+    caller = FakeCaller(actions=[
+        action_reply(call=("type_text", {"element_id": 1, "text": "lofi hip hop radio", "submit": True})),
+        action_reply(call=("click", {"element_id": 1})),
+        action_reply(call=("task_complete", {"summary": "The lofi stream is playing."})),
+    ])
+    await start(caller, browser)
+    assert browser.screenshots == 0
+
+
+async def test_a_screenshot_is_taken_when_the_page_cant_be_read():
+    from tests.test_page_step import start
+
+    class Unreadable(CountsScreenshots):
+        async def execute_action(self, name, args):
+            if name == "page_map":
+                return {"success": False}
+            return await super().execute_action(name, args)
+
+    browser = Unreadable([page("https://canvas.example/", ("button", "Go"))])
+    caller = FakeCaller(actions=[action_reply(call=("task_complete", {"summary": "done"}))])
+    await start(caller, browser, task="look at the drawing")
+    assert browser.screenshots >= 1
